@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pa-domain",
+    "crates/pa-app",
+    "crates/pa-infra",
+    "crates/pa-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+
+[workspace.dependencies]
+pa-domain = { path = "crates/pa-domain" }
+pa-app = { path = "crates/pa-app" }
+pa-infra = { path = "crates/pa-infra" }
+
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true

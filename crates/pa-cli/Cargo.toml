@@ -1,0 +1,23 @@
+[package]
+name = "pa-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The pa binary: composition root and command surface."
+
+[[bin]]
+name = "pa"
+path = "src/main.rs"
+
+[dependencies]
+pa-domain.workspace = true
+pa-app.workspace = true
+pa-infra.workspace = true
+chrono.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"

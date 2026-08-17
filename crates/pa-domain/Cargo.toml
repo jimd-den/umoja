@@ -1,0 +1,16 @@
+[package]
+name = "pa-domain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Prime Agent domain model: entities, invariants and ports. No I/O."
+
+[dependencies]
+chrono.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
