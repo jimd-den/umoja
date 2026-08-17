@@ -33,6 +33,29 @@ if [ -d "$CLAUDE_SKILLS" ] && [ ! -e "$CLAUDE_SKILLS/prime-agent" ]; then
   say "linked $CLAUDE_SKILLS/prime-agent"
 fi
 
+# opencode has no skills concept, so the equivalent entry point is a custom
+# command. It points at SKILL.md rather than copying it, so there is still only
+# one source of truth to edit.
+OPENCODE_CMD="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/command"
+if command -v opencode >/dev/null 2>&1 && [ ! -e "$OPENCODE_CMD/prime-agent.md" ]; then
+  mkdir -p "$OPENCODE_CMD"
+  cat > "$OPENCODE_CMD/prime-agent.md" <<EOF
+---
+description: Prime Agent capabilities — persistent kernel, continual harness, subagents, goals, schedules, autonomous gates
+---
+
+Read $SKILL_DIR/SKILL.md and follow it, loading the files under
+$SKILL_DIR/references/ only as the task requires them.
+
+The \`pa\` binary is already installed. Its most important habit: load large
+data into the kernel with \`pa kernel exec\` and print only the reduced answer,
+so the data never enters this conversation.
+
+Task: \$ARGUMENTS
+EOF
+  say "wrote $OPENCODE_CMD/prime-agent.md  (use: /prime-agent)"
+fi
+
 echo
 if ! command -v pa >/dev/null 2>&1; then
   say "note: $BIN_DIR is not on your PATH. Add it:"

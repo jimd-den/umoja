@@ -128,6 +128,19 @@ pub trait KernelPort: Send + Sync {
     fn restore(&self, session_id: &str) -> Result<bool>;
 }
 
+/// Resolves the harness a particular session belongs to.
+///
+/// A session records which harness started it, and a later turn — a heartbeat,
+/// a goal continuation, a scheduled prompt — must go back to that same one. A
+/// supervisor holding a single runner would continue every session under
+/// whichever harness the tick happened to be invoked with, which is how a
+/// resumed conversation loses its thread.
+pub trait RunnerRegistry: Send + Sync {
+    fn get(&self, name: &str) -> Result<std::sync::Arc<dyn AgentRunner>>;
+    /// The harness used when a session does not name one.
+    fn default_name(&self) -> String;
+}
+
 /// A harness that can run an agent turn.
 pub trait AgentRunner: Send + Sync {
     fn capabilities(&self) -> RunnerCapabilities;

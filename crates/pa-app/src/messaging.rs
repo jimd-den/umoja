@@ -304,7 +304,7 @@ mod tests {
                 env.clone(),
                 sessions.clone(),
                 registry,
-                Arc::new(MemRunner::ready()),
+                Arc::new(MemRunnerRegistry::new(Arc::new(MemRunner::ready()))),
                 transcript.clone(),
                 DepthPolicy { max_depth: 2 },
             ),

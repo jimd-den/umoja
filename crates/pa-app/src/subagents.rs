@@ -30,7 +30,7 @@ pub struct SubagentService {
     env: Env,
     sessions: Arc<dyn SessionStore>,
     registry: Arc<dyn SubagentRegistry>,
-    runner: Arc<dyn AgentRunner>,
+    runners: Arc<dyn RunnerRegistry>,
     transcript: Arc<dyn TranscriptLog>,
     depth: DepthPolicy,
 }
@@ -46,7 +46,7 @@ impl SubagentService {
         env: Env,
         sessions: Arc<dyn SessionStore>,
         registry: Arc<dyn SubagentRegistry>,
-        runner: Arc<dyn AgentRunner>,
+        runners: Arc<dyn RunnerRegistry>,
         transcript: Arc<dyn TranscriptLog>,
         depth: DepthPolicy,
     ) -> Self {
@@ -54,7 +54,7 @@ impl SubagentService {
             env,
             sessions,
             registry,
-            runner,
+            runners,
             transcript,
             depth,
         }
@@ -138,7 +138,13 @@ impl SubagentService {
             .with_system_prompt(request.system_prompt)
             .detached();
 
-        match self.runner.run(&run) {
+        // `--with opencode` on a spawn means the child really runs there, even
+        // though the parent is on something else.
+        match self
+            .runners
+            .get(&child.runner)
+            .and_then(|runner| runner.run(&run))
+        {
             Ok(outcome) => {
                 child.status = SubagentStatus::Running;
                 if let Some(pid) = outcome.pid {
@@ -276,13 +282,14 @@ mod tests {
         let sessions = Arc::new(MemSessions::default());
         let registry = Arc::new(MemSubagents::default());
         let runner = Arc::new(MemRunner::ready());
+        let runners = Arc::new(MemRunnerRegistry::new(runner.clone()));
         let transcript = Arc::new(MemTranscript::default());
         Fixture {
             subagents: SubagentService::new(
                 env.clone(),
                 sessions.clone(),
                 registry,
-                runner.clone(),
+                runners,
                 transcript.clone(),
                 DepthPolicy { max_depth },
             ),

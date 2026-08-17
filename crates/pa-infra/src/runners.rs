@@ -9,8 +9,11 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Instant;
 
+use std::collections::HashMap;
+use std::sync::Mutex;
+
 use pa_domain::error::{DomainError, Result};
-use pa_domain::ports::AgentRunner;
+use pa_domain::ports::{AgentRunner, RunnerRegistry};
 use pa_domain::runner::{RunOutcome, RunRequest, RunnerCapabilities};
 use pa_domain::session::Usage;
 
@@ -340,6 +343,62 @@ impl AgentRunner for DryRunner {
     }
 }
 
+/// Resolves runners by name, building each at most once.
+///
+/// A session that names a harness this machine does not have falls back to the
+/// default rather than failing outright — a heartbeat should still fire when
+/// the session was started on a laptop that had opencode and this one does not.
+pub struct CachingRunnerRegistry {
+    default_name: String,
+    cache: Mutex<HashMap<String, Arc<dyn AgentRunner>>>,
+}
+
+impl std::fmt::Debug for CachingRunnerRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CachingRunnerRegistry({})", self.default_name)
+    }
+}
+
+impl CachingRunnerRegistry {
+    pub fn new(default_name: impl Into<String>) -> Self {
+        Self {
+            default_name: default_name.into(),
+            cache: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl RunnerRegistry for CachingRunnerRegistry {
+    fn get(&self, name: &str) -> Result<Arc<dyn AgentRunner>> {
+        let wanted = if name.trim().is_empty() {
+            self.default_name.clone()
+        } else {
+            name.to_string()
+        };
+
+        if let Some(cached) = self.cache.lock().unwrap().get(&wanted) {
+            return Ok(cached.clone());
+        }
+
+        let runner = match build(&wanted) {
+            Ok(runner) if runner.probe().is_ok() => runner,
+            // Either the name is unknown here or that harness is not installed.
+            // Falling back keeps the session running; failing would strand it.
+            _ => build(&self.default_name)?,
+        };
+
+        self.cache
+            .lock()
+            .unwrap()
+            .insert(wanted, runner.clone());
+        Ok(runner)
+    }
+
+    fn default_name(&self) -> String {
+        self.default_name.clone()
+    }
+}
+
 pub const RUNNERS: [&str; 3] = ["claude", "opencode", "dry-run"];
 
 pub fn build(name: &str) -> Result<Arc<dyn AgentRunner>> {
@@ -430,6 +489,24 @@ mod tests {
         assert!(outcome.ok);
         assert!(outcome.text.contains("would send to sonnet"));
         assert!(DryRunner.probe().is_ok());
+    }
+
+    #[test]
+    fn the_registry_returns_the_named_runner_and_caches_it() {
+        let registry = CachingRunnerRegistry::new("dry-run");
+        assert_eq!(registry.get("dry-run").unwrap().capabilities().name, "dry-run");
+        assert_eq!(registry.get("dry-run").unwrap().capabilities().name, "dry-run");
+        assert_eq!(registry.cache.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn an_unknown_or_uninstalled_harness_falls_back_to_the_default() {
+        let registry = CachingRunnerRegistry::new("dry-run");
+        // Neither of these can run here, so both land on the default rather
+        // than stranding the session that named them.
+        assert_eq!(registry.get("emacs").unwrap().capabilities().name, "dry-run");
+        assert_eq!(registry.get("").unwrap().capabilities().name, "dry-run");
+        assert_eq!(registry.default_name(), "dry-run");
     }
 
     #[test]

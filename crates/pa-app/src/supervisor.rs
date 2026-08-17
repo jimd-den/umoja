@@ -47,7 +47,7 @@ impl TickReport {
 pub struct SupervisorService {
     env: Env,
     sessions: Arc<dyn SessionStore>,
-    runner: Arc<dyn AgentRunner>,
+    runners: Arc<dyn RunnerRegistry>,
     transcript: Arc<dyn TranscriptLog>,
     heartbeats: Arc<HeartbeatService>,
     schedules: Arc<ScheduleService>,
@@ -66,7 +66,7 @@ impl SupervisorService {
     pub fn new(
         env: Env,
         sessions: Arc<dyn SessionStore>,
-        runner: Arc<dyn AgentRunner>,
+        runners: Arc<dyn RunnerRegistry>,
         transcript: Arc<dyn TranscriptLog>,
         heartbeats: Arc<HeartbeatService>,
         schedules: Arc<ScheduleService>,
@@ -76,7 +76,7 @@ impl SupervisorService {
         Self {
             env,
             sessions,
-            runner,
+            runners,
             transcript,
             heartbeats,
             schedules,
@@ -219,7 +219,10 @@ impl SupervisorService {
         let mut request = RunRequest::new(&session.id, prompt, &session.workdir)?
             .with_model(session.model.clone());
         request.delivery = delivery;
-        self.runner.run(&request)
+        // The session's own harness, not whichever one this tick was invoked
+        // with: a conversation started under one runner cannot be continued
+        // under another.
+        self.runners.get(&session.runner)?.run(&request)
     }
 
     /// Folds a delivery's cost into everything that is counting.
@@ -283,6 +286,7 @@ mod tests {
     use crate::sessions::{SessionService, StartSession};
 
     struct Fixture {
+        runners: Arc<MemRunnerRegistry>,
         supervisor: SupervisorService,
         heartbeats: Arc<HeartbeatService>,
         schedules: Arc<ScheduleService>,
@@ -298,6 +302,7 @@ mod tests {
         let sessions = Arc::new(MemSessions::default());
         let transcript = Arc::new(MemTranscript::default());
         let runner = Arc::new(MemRunner::ready());
+        let runners = Arc::new(MemRunnerRegistry::new(runner.clone()));
 
         SessionService::new(
             env.clone(),
@@ -340,10 +345,11 @@ mod tests {
         ));
 
         Fixture {
+            runners: runners.clone(),
             supervisor: SupervisorService::new(
                 env,
                 sessions.clone(),
-                runner.clone(),
+                runners.clone(),
                 transcript,
                 heartbeats.clone(),
                 schedules.clone(),
@@ -518,6 +524,28 @@ mod tests {
         assert_eq!(
             fixture.goals.require("worker").unwrap().progress.continuations,
             0
+        );
+    }
+
+    #[test]
+    fn a_session_is_continued_on_the_harness_that_started_it() {
+        let fixture = fixture();
+
+        // The session was started under "claude"; this tick must ask for that
+        // harness, not for whichever one the tick itself was configured with.
+        let mut session = fixture.sessions.resolve("worker").unwrap();
+        session.runner = "opencode".into();
+        fixture.sessions.update(&session).unwrap();
+
+        fixture
+            .goals
+            .create("worker", "ship it", GoalBudget::default(), false)
+            .unwrap();
+        fixture.supervisor.tick().unwrap();
+
+        assert_eq!(
+            *fixture.runners.asked.lock().unwrap(),
+            vec!["opencode".to_string()]
         );
     }
 

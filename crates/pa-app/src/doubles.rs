@@ -720,6 +720,34 @@ impl AgentRunner for MemRunner {
     }
 }
 
+/// Hands out one runner for every name, and records which names were asked
+/// for so a test can assert that the session's own harness was used.
+#[derive(Debug)]
+pub struct MemRunnerRegistry {
+    pub runner: Arc<MemRunner>,
+    pub asked: Mutex<Vec<String>>,
+}
+
+impl MemRunnerRegistry {
+    pub fn new(runner: Arc<MemRunner>) -> Self {
+        Self {
+            runner,
+            asked: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl RunnerRegistry for MemRunnerRegistry {
+    fn get(&self, name: &str) -> Result<Arc<dyn AgentRunner>> {
+        lock!(self, asked).push(name.to_string());
+        Ok(self.runner.clone())
+    }
+
+    fn default_name(&self) -> String {
+        "memory".into()
+    }
+}
+
 // --- gates ------------------------------------------------------------------
 
 #[derive(Debug, Default)]

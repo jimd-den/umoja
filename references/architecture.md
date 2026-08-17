@@ -38,6 +38,7 @@ making a rule testable without the world:
 | Port | Implementations |
 |---|---|
 | `AgentRunner` | `ClaudeRunner`, `OpencodeRunner`, `DryRunner` |
+| `RunnerRegistry` | caching, per-session resolution with an honest fallback |
 | `KernelPort` | `SocketKernel` (Python, Node), `ShellKernel` |
 | `Clock` / `IdGen` | system, and deterministic test doubles |
 | `GateRunner` | shell + git fingerprint |
@@ -92,6 +93,15 @@ the natural artifact path exceeds that on any deeply nested workspace. The
 bootstrap scripts are embedded in the binary with `include_str!` and rewritten
 whenever they differ, so an upgraded `pa` never talks to a stale script.
 
+## Which harness continues a session
+
+A session records the harness that started it, and every later turn goes back to
+that one. A `pa tick` from cron does not force every session onto whichever
+runner the cron line happened to name — a heartbeat on an opencode session
+reaches opencode even when the tick was invoked as `--runner claude`. Where the
+recorded harness is not installed on this machine, the registry falls back to
+the default rather than stranding the session.
+
 ## Trust
 
 The kernel executes model-generated code with your operating-system
@@ -102,14 +112,14 @@ memory-safety bugs, not against a program you asked it to run.
 
 ## Testing
 
-210 tests, no network, no fixtures directory.
+215 tests, no network, no fixtures directory.
 
 - **Domain** (57): cron arithmetic, budget exhaustion, depth limits, delivery
   rules, output clipping — all pure.
-- **Application** (89): every rule against in-memory ports. These are working
+- **Application** (90): every rule against in-memory ports. These are working
   implementations, not assert-on-call mocks, so a passing test is testing the
   rule rather than the plumbing.
-- **Infra** (57): real files, real locks, and a real Python kernel — persistence
+- **Infra** (61): real files, real locks, and a real Python kernel — persistence
   across client instances, a traceback that leaves the namespace alive, a
   timeout that does the same, snapshot and restore.
 - **CLI** (7): clap's own `debug_assert`, plus exit-code mapping.

@@ -24,7 +24,7 @@ use pa_domain::message::MessageLimits;
 use pa_domain::prelude::*;
 use pa_infra::gates::ShellGateRunner;
 use pa_infra::paths::Paths;
-use pa_infra::runners;
+use pa_infra::runners::{self, CachingRunnerRegistry};
 use pa_infra::skills_fs::FsSkillCatalog;
 use pa_infra::stores::*;
 use pa_infra::summariser::AgentSummariser;
@@ -89,6 +89,10 @@ impl App {
             .or_else(|| std::env::var("PA_RUNNER").ok())
             .unwrap_or_else(|| runners::detect().to_string());
         let runner = runners::build(&runner_name)?;
+        // Sessions record the harness that started them, so later turns are
+        // resolved per session rather than forced onto this invocation's choice.
+        let runner_registry: Arc<dyn RunnerRegistry> =
+            Arc::new(CachingRunnerRegistry::new(runner_name.clone()));
 
         let sessions: Arc<dyn SessionStore> = Arc::new(FsSessionStore::new(&paths));
         let transcript: Arc<dyn TranscriptLog> = Arc::new(FsTranscriptLog::new(paths.clone()));
@@ -152,7 +156,7 @@ impl App {
                 env.clone(),
                 sessions.clone(),
                 registry.clone(),
-                runner.clone(),
+                runner_registry.clone(),
                 transcript.clone(),
                 depth,
             ),
@@ -176,7 +180,7 @@ impl App {
             supervisor: SupervisorService::new(
                 env.clone(),
                 sessions.clone(),
-                runner.clone(),
+                runner_registry,
                 transcript.clone(),
                 heartbeats.clone(),
                 schedules.clone(),
