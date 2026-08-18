@@ -10,14 +10,14 @@ Bound in every Python kernel, no import needed, and hidden from `pa kernel
 vars` so your own bindings stay legible.
 
 ```bash
-pa kernel exec 'load("crates/**/*.rs")'      # 57 files, 511.6 KB in FILES
+pa kernel exec 'load("crates/**/*.rs")'      # 57 files, 511.5 KB indexed
 pa kernel exec 'for h in grep("pub fn call"): print(h)'
 pa kernel exec 'print("\n".join(outline("src/lib.rs")))'
 ```
 
 | Call | Returns |
 |---|---|
-| `load(pattern, root=".")` | Reads a glob into `FILES`. Prints a tally, never contents. |
+| `load(pattern, root=".")` | Indexes a glob into `FILES`. Records paths, reads nothing. |
 | `grep(pattern, where=None, context=0, limit=200, ignore_case=False)` | `path:line: text` matches. |
 | `outline(path)` | A file's definitions — its shape, not its text. |
 | `head(path, lines=40)` | The first N lines. |
@@ -38,6 +38,22 @@ while writing a grep by hand is five. So the short line is the reducing one:
 `outline` returns shape rather than text. Reaching for a whole file is still
 possible and still sometimes right — it is just no longer the path of least
 resistance.
+
+### An index, not a cache
+
+`load` records paths and reads nothing. Measured on 14,293 files (338MB):
+
+    holding the text     load 0.89s   search 0.48s   391MB resident
+    indexing the paths   load 0.32s   search 0.84s    25MB resident
+
+Twice the search time for a sixteenth of the memory; on a 63-file project the
+two are indistinguishable. A bounded 64MB cache was tried and was worse than
+both — it bought no speed, because a budget large enough to matter is a budget
+large enough to hurt.
+
+Memory is the smaller half of the argument. A cache is a second copy of the
+truth and goes stale the moment anything edits a file behind it; reading on
+demand cannot be wrong about what is on disk.
 
 `FILES` survives `pa kernel reset` as a name but not as data: the toolkit is
 plumbing, its contents are yours, and "empty the namespace" has to mean it.

@@ -74,14 +74,14 @@ Bound in every Python kernel, no import needed. `pa kernel vars` hides them, so
 your own bindings stay legible.
 
 ```bash
-pa kernel exec 'load("crates/**/*.rs")'          # 57 files, 511.6 KB in FILES
+pa kernel exec 'load("crates/**/*.rs")'          # 57 files, 511.5 KB indexed
 pa kernel exec 'for h in grep("pub fn call"): print(h)'
 pa kernel exec 'print("\n".join(outline("src/lib.rs")))'
 ```
 
 | Call | Returns |
 |---|---|
-| `load(pattern, root=".")` | Reads a glob into `FILES`. Prints a tally, never contents. Unreadable files are skipped and counted. |
+| `load(pattern, root=".")` | Indexes a glob into `FILES`. Records paths, reads nothing, prints a tally. |
 | `grep(pattern, where=None, context=0, limit=200, ignore_case=False)` | `path:line: text` matches — the answer, not the haystack. |
 | `outline(path)` | A file's definitions, so you can decide where to look without reading the way there. |
 | `head(path, lines=40)` | The first N lines, for when a peek really is enough. |
@@ -90,9 +90,29 @@ pa kernel exec 'print("\n".join(outline("src/lib.rs")))'
 | `edit(path, old, new, count=1)` | Exact replacement. **Refuses** when `old` is missing or ambiguous rather than guessing. |
 | `sh(command, cwd=None)` | `(exit_code, stdout, stderr)`, so a command's output stays in the namespace. |
 
-`outline`, `head`, `slice_lines` and `edit` fall back to reading from disk when
-a path was never loaded — being told "no definitions" because of a stale key is
-a wrong answer wearing a right answer's clothes.
+`outline`, `head`, `slice_lines` and `edit` read any path, indexed or not —
+being told "no definitions" because a path was never indexed is a wrong answer
+wearing a right answer's clothes.
+
+### The corpus is an index, not a cache
+
+`load` records paths and reads nothing; every access reads the file as it is on
+disk right now. Measured on 14,293 files (338MB of Rust):
+
+| | load | search | kernel RSS |
+|---|---|---|---|
+| holding the text | 0.89s | 0.48s | **391MB** |
+| indexing the paths | **0.32s** | 0.84s | **25MB** |
+
+Twice the search time for a sixteenth of the memory, and on a normal project
+(63 files) the two are indistinguishable at 0.01s — so the trade is paid only
+where it is affordable. A bounded cache was tried and lost to both: 73MB bought
+no speed at all.
+
+The deciding argument is not memory. A cache is a second copy of the truth, and
+it goes stale the moment anything edits a file behind it — another process, a
+git checkout, the harness's own editor. Reading on demand cannot be wrong about
+what is on disk.
 
 ## Recursive delegation: `rlm(...)`
 

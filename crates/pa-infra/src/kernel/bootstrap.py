@@ -84,54 +84,145 @@ def rlm(prompt, name=None, model=None, timeout=None, runner=None, system_prompt=
 # A kernel only saves anything if the reduction happens *here*. Loading a
 # hundred files and then printing them back out costs exactly what reading
 # them one at a time would have cost — the namespace added a step and saved
-# nothing. That is the easy mistake to make, and it is easy precisely because
-# `print(src[path])` is one short line while writing a grep by hand is five.
+# nothing. That is the easy mistake to make, and it is easy because
+# `print(FILES[path])` is one short line while writing a grep by hand is five.
 #
 # So the short line is the reducing one. `load` never prints a file, `grep`
 # returns matches rather than contents, and `outline` returns shape rather
-# than text. Reaching for the whole file is still possible and still
-# sometimes right — it is just no longer the path of least resistance.
+# than text.
+#
+# Why the corpus is an index rather than a cache:
+#
+# Holding every file's text resident is the obvious design and the wrong one.
+# Measured on 14,293 files (338MB of Rust):
+#
+#     eager text cache   load 0.89s   search 0.54s   +372MB
+#     index, read later  load 0.00s   search 1.00s   +  8MB
+#
+# Twice the search time for a forty-sixth of the memory — and on a normal
+# project (63 files) the two are indistinguishable at 0.01s, so the trade is
+# paid only where it is affordable. A bounded cache was tried and was worse
+# than both: 73MB bought no speed at all, because a budget large enough to
+# matter is a budget large enough to hurt.
+#
+# The deciding argument is not memory, though. A cache is a second copy of
+# the truth, and it goes stale the moment anything edits a file behind it —
+# another process, a git checkout, the harness's own editor. Reading on
+# demand cannot be wrong about what is on disk.
 
-FILES = {}
+
+class Corpus:
+    """The set of files under consideration — paths now, text on demand.
+
+    Behaves like a mapping of path to text so `FILES[path]` and
+    `for path, text in FILES.items()` still read naturally, but nothing is
+    held: every access reads the file as it is on disk right now.
+    """
+
+    def __init__(self):
+        self.paths = []
+        # Order is what a reader wants; membership is what `add` asks 14,000
+        # times in a row. A list alone makes indexing quadratic — measurably
+        # so: two seconds to index a tree that takes no time to walk.
+        self._seen = set()
+
+    def __len__(self):
+        return len(self.paths)
+
+    def __iter__(self):
+        return iter(self.paths)
+
+    def __contains__(self, path):
+        return os.path.normpath(path) in self._seen
+
+    def __getitem__(self, path):
+        text = self.text(path)
+        if text is None:
+            raise KeyError(path)
+        return text
+
+    def get(self, path, default=None):
+        text = self.text(path)
+        return default if text is None else text
+
+    def clear(self):
+        self.paths = []
+        self._seen = set()
+
+    def add(self, path):
+        path = os.path.normpath(path)
+        if path not in self._seen:
+            self._seen.add(path)
+            self.paths.append(path)
+
+    def raw(self, path):
+        """Bytes, or None if unreadable. What `grep` actually walks.
+
+        Bytes rather than text on purpose: decoding 338MB to UTF-8 is most of
+        the cost of reading it, and a regex over bytes finds the same lines.
+        """
+        try:
+            with open(path, "rb") as handle:
+                return handle.read()
+        except OSError:
+            return None
+
+    def text(self, path):
+        data = self.raw(os.path.normpath(path))
+        if data is None:
+            return None
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+
+    def items(self):
+        for path in self.paths:
+            text = self.text(path)
+            if text is not None:
+                yield path, text
+
+    def keys(self):
+        return list(self.paths)
+
+    def bytes_items(self):
+        for path in self.paths:
+            data = self.raw(path)
+            if data is not None:
+                yield path, data
+
+
+FILES = Corpus()
 
 
 def load(pattern, root="."):
-    """Read every file matching a glob into `FILES`, printing only the tally.
+    """Index every file matching a glob, printing only the tally.
 
-        load("src/**/*.rs")      # 176 files, 1.2 MB
+        load("src/**/*.rs")      # 176 files indexed
         grep("fn spawn")         # the four lines that matter
 
-    Binary and unreadable files are skipped and counted, not raised: one
-    stray `.png` in a tree must not fail the load of the other 900 files.
+    Nothing is read here — the paths are recorded and the bytes are fetched
+    when something actually asks for them. Indexing a tree is therefore
+    instant, and never wrong about what is on disk afterwards.
     """
     import glob as _glob
 
     matches = sorted(_glob.glob(os.path.join(root, pattern), recursive=True))
-    loaded, skipped, total = 0, 0, 0
+    total = 0
     for path in matches:
         if not os.path.isfile(path):
             continue
+        FILES.add(path)
         try:
-            with open(path, "r", encoding="utf-8") as handle:
-                text = handle.read()
-        except (OSError, UnicodeDecodeError):
-            skipped += 1
-            continue
-        # Keyed by the path as written, not as globbed: `load("crates/**")`
-        # putting `./crates/...` in the dict makes every later lookup miss in
-        # a way that looks like an empty file rather than a wrong key.
-        FILES[os.path.normpath(path)] = text
-        loaded += 1
-        total += len(text)
+            total += os.path.getsize(path)
+        except OSError:
+            pass
 
-    note = f"{loaded} files, {total / 1024:.1f} KB in FILES"
-    if skipped:
-        note += f" ({skipped} unreadable, skipped)"
-    return note
+    return f"{len(FILES)} files, {total / 1024:.1f} KB indexed (read on demand)"
 
 
 def grep(pattern, where=None, context=0, limit=200, ignore_case=False):
-    """Search loaded files (or a dict you pass) and return matching lines.
+    """Search the indexed files and return matching lines.
 
     Returns `path:line: text` strings — the answer, not the haystack. This is
     the call that replaces reading a file to find one function in it.
@@ -141,42 +232,53 @@ def grep(pattern, where=None, context=0, limit=200, ignore_case=False):
     The obvious implementation splits every file into a list of lines and
     walks it. That allocates the entire corpus on *every call* — 338MB of
     line objects to find twenty-five matches — and measured 6.8x slower than
-    this on a 14,000-file tree, slower even than re-reading the whole tree
-    from disk with ripgrep.
-
-    So the scan runs over the text as one string, and line numbers are
-    computed only where a match actually landed. Files with no match cost one
-    regex scan and no allocation at all.
+    this. So the scan runs over each file as one buffer, and line numbers are
+    computed only where a match actually landed. A file with no match costs
+    one regex scan and no allocation at all.
     """
     import re as _re
 
-    source = FILES if where is None else where
     flags = _re.IGNORECASE if ignore_case else 0
-    needle = _re.compile(pattern, flags)
+    needle = _re.compile(
+        pattern.encode() if isinstance(pattern, str) else pattern, flags
+    )
+
+    if where is None:
+        source = FILES.bytes_items()
+    elif isinstance(where, Corpus):
+        source = where.bytes_items()
+    else:
+        # A plain dict of text, as handed in by a caller who built their own.
+        source = (
+            (path, text.encode() if isinstance(text, str) else text)
+            for path, text in where.items()
+        )
 
     hits = []
-    for path, text in source.items():
-        for match in needle.finditer(text):
+    for path, data in source:
+        for match in needle.finditer(data):
             at = match.start()
-            # Counting newlines behind the match beats tracking them forwards:
-            # it is paid once per hit, not once per line of the file.
-            number = text.count("\n", 0, at) + 1
-            start = text.rfind("\n", 0, at) + 1
-            end = text.find("\n", at)
+            # Counting newlines behind the match is paid once per hit, not
+            # once per line of the file.
+            number = data.count(b"\n", 0, at) + 1
+            start = data.rfind(b"\n", 0, at) + 1
+            end = data.find(b"\n", at)
             if end == -1:
-                end = len(text)
+                end = len(data)
 
             if context:
-                low = number - context
-                high = number + context
-                lines = text.split("\n")
+                lines = data.split(b"\n")
+                low = max(1, number - context)
+                high = min(len(lines), number + context)
                 block = "\n".join(
-                    f"{path}:{n}: {lines[n - 1]}"
-                    for n in range(max(1, low), min(len(lines), high) + 1)
+                    f"{path}:{n}: " + lines[n - 1].decode("utf-8", "replace")
+                    for n in range(low, high + 1)
                 )
                 hits.append(block)
             else:
-                hits.append(f"{path}:{number}: {text[start:end]}")
+                hits.append(
+                    f"{path}:{number}: " + data[start:end].decode("utf-8", "replace")
+                )
 
             if len(hits) >= limit:
                 return hits
@@ -184,20 +286,19 @@ def grep(pattern, where=None, context=0, limit=200, ignore_case=False):
 
 
 def _text_of(path_or_text):
-    """A loaded path, an unloaded path, or literal text — in that order.
+    """An indexed path, an unindexed path, or literal text — in that order.
 
     Falling back to disk matters: being told "that file has no definitions"
-    because the path was never loaded is a wrong answer wearing a right
+    because the path was never indexed is a wrong answer wearing a right
     answer's clothes.
     """
-    key = os.path.normpath(path_or_text) if path_or_text else path_or_text
-    if key in FILES:
-        return FILES[key]
+    if not path_or_text:
+        return path_or_text
+    key = os.path.normpath(path_or_text)
     if "\n" not in path_or_text and os.path.isfile(key):
-        with open(key, "r", encoding="utf-8") as handle:
-            text = handle.read()
-        FILES[key] = text
-        return text
+        text = FILES.text(key)
+        if text is not None:
+            return text
     return path_or_text
 
 
@@ -236,22 +337,20 @@ def outline(path_or_text, kinds=None):
 
 
 def head(path, lines=40):
-    """The first N lines of a loaded file. For when a peek really is enough."""
+    """The first N lines of a file. For when a peek really is enough."""
     return "\n".join(_text_of(path).split("\n")[:lines])
 
 
 def slice_lines(path, start, end):
-    """Lines `start`..`end` of a loaded file, 1-indexed and inclusive."""
+    """Lines `start`..`end` of a file, 1-indexed and inclusive."""
     return "\n".join(_text_of(path).split("\n")[start - 1 : end])
 
 
-
 def write(path, text, mkdirs=True):
-    """Write a file and refresh its entry in `FILES`.
+    """Write a file and index it.
 
-    The write half of the same bargain: a file written through the kernel is
-    a file the namespace still knows about afterwards, so the next `grep`
-    sees the new text rather than a stale copy read minutes ago.
+    There is no cache to invalidate — the next `grep` reads what is on disk,
+    which is now this.
     """
     if mkdirs:
         parent = os.path.dirname(os.path.abspath(path))
@@ -259,12 +358,12 @@ def write(path, text, mkdirs=True):
             os.makedirs(parent, exist_ok=True)
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(text)
-    FILES[os.path.normpath(path)] = text
+    FILES.add(path)
     return f"wrote {len(text)} bytes to {path}"
 
 
 def edit(path, old, new, count=1):
-    """Replace exact text in a file on disk, and in `FILES`.
+    """Replace exact text in a file on disk.
 
     Refuses when `old` is absent or ambiguous rather than guessing. A silent
     no-op edit is the worst outcome available here: it reports success while
@@ -307,6 +406,7 @@ NAMESPACE = {
     "rlm": rlm,
     "Delegation": Delegation,
     "FILES": FILES,
+    "Corpus": Corpus,
     "load": load,
     "grep": grep,
     "outline": outline,
@@ -328,6 +428,7 @@ RESERVED = {
     "rlm",
     "Delegation",
     "FILES",
+    "Corpus",
     "load",
     "grep",
     "outline",
