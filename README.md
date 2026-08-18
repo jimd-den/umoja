@@ -1,7 +1,11 @@
-# prime-agent
+# UMOJA
 
-[Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent)'s capabilities
-as one Rust binary, usable from Claude Code, opencode, or a plain shell.
+**U**moja **M**anages **O**rchestrated **J**oint **A**gents
+
+*Umoja* — Swahili for "unity," the first principle of Kwanzaa: working as one
+toward a shared purpose. This is [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent)'s
+capabilities as one Rust binary (`pa`), usable from Claude Code, opencode, or
+a plain shell.
 
 ```bash
 ./install.sh
@@ -14,7 +18,8 @@ pa kernel exec 'len(rows)'      # a separate process; `rows` is still there
   being printed into the conversation.
 - **A continual harness** — evidence-backed memories, notes, skill and subagent
   specs, with a before/after paper trail and one-command rollback.
-- **Subagents** — admitted and left to work; replies arrive as messages.
+- **Subagents** — admitted and left to work; replies arrive as messages,
+  many agents pulling in one direction — *umoja*.
 - **Goals, heartbeats, schedules, autonomous gates, compaction** — work that
   outlives the turn, with budgets that are never reported as completion.
 
