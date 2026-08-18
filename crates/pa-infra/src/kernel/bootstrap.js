@@ -10,11 +10,54 @@
 
 const fs = require('fs');
 const net = require('net');
+const childProcess = require('child_process');
 const vm = require('vm');
 
 const args = process.argv.slice(2);
 const socketPath = args[args.indexOf('--socket') + 1];
 const idleSeconds = Number(args[args.indexOf('--idle') + 1] || 3600);
+
+class Delegation extends Error {}
+
+/// Ask a child agent a question and get its answer back, here, as a string.
+///
+/// The recursive half of prompt-as-a-variable: the namespace keeps a large
+/// input out of the conversation, and this keeps a large sub-task out of it
+/// too — only the child's conclusion is bound to a variable.
+///
+/// Blocking on purpose. When the answer is not needed before the turn ends,
+/// `pa agent spawn` is the cheaper shape: it returns the instant the child is
+/// admitted, and several can run at once.
+function rlm(prompt, options = {}) {
+  const binary = process.env.PA_BIN || 'pa';
+  const argv = ['--json', 'agent', 'call', String(prompt)];
+  const flags = {
+    '--name': options.name,
+    '--model': options.model,
+    '--with': options.runner,
+    '--system-prompt': options.systemPrompt,
+    '--timeout': options.timeout,
+  };
+  for (const [flag, value] of Object.entries(flags)) {
+    if (value !== undefined && value !== null) argv.push(flag, String(value));
+  }
+
+  const done = childProcess.spawnSync(binary, argv, { encoding: 'utf8' });
+  if (done.error) throw new Delegation(`could not run ${binary}: ${done.error.message}`);
+
+  let payload;
+  try {
+    payload = JSON.parse(done.stdout);
+  } catch {
+    const detail = (done.stderr || done.stdout || '').trim();
+    throw new Delegation(detail || `${binary} exited ${done.status}`);
+  }
+
+  // An error that reads like an answer is worse than no answer, so a failed
+  // child throws rather than returning its own error text.
+  if (!payload.ok) throw new Delegation(payload.error || 'the child agent failed');
+  return payload.text || '';
+}
 
 // The namespace. `require` is exposed deliberately: a kernel that cannot read a
 // file is not much of a kernel.
@@ -25,9 +68,20 @@ const context = vm.createContext({
   Buffer,
   setTimeout,
   clearTimeout,
+  rlm,
+  Delegation,
 });
 
-const RESERVED = new Set(['require', 'console', 'process', 'Buffer', 'setTimeout', 'clearTimeout']);
+const RESERVED = new Set([
+  'require',
+  'console',
+  'process',
+  'Buffer',
+  'setTimeout',
+  'clearTimeout',
+  'rlm',
+  'Delegation',
+]);
 
 function summarise(name, value) {
   const info = { name, type_name: typeof value, length: null, size_bytes: null, preview: null };

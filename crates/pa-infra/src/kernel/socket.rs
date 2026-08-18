@@ -234,6 +234,18 @@ impl SocketKernel {
             ))
             .stderr(Stdio::from(log));
 
+        // What the namespace needs in order to call back into `pa` — this is
+        // what makes `rlm(...)` inside the kernel possible at all. The two
+        // names are the ones the CLI already reads for itself, so a kernel
+        // that shells out lands in the same session and the same home rather
+        // than a second one it invented.
+        command
+            .env("PA_SESSION", session_id)
+            .env("PRIME_AGENT_HOME", self.paths.root());
+        if let Ok(binary) = std::env::current_exe() {
+            command.env("PA_BIN", binary);
+        }
+
         command.spawn().map_err(|error| {
             DomainError::adapter(
                 format!("start {} kernel", self.config.language.label()),

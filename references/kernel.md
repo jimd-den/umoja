@@ -4,6 +4,44 @@ A long-lived interpreter process, one per session per language, reached over a
 Unix socket. `pa` itself is a one-shot binary; the namespace is not inside it,
 which is exactly why a variable survives from one tool call to the next.
 
+## The file toolkit
+
+Bound in every Python kernel, no import needed, and hidden from `pa kernel
+vars` so your own bindings stay legible.
+
+```bash
+pa kernel exec 'load("crates/**/*.rs")'      # 57 files, 511.6 KB in FILES
+pa kernel exec 'for h in grep("pub fn call"): print(h)'
+pa kernel exec 'print("\n".join(outline("src/lib.rs")))'
+```
+
+| Call | Returns |
+|---|---|
+| `load(pattern, root=".")` | Reads a glob into `FILES`. Prints a tally, never contents. |
+| `grep(pattern, where=None, context=0, limit=200, ignore_case=False)` | `path:line: text` matches. |
+| `outline(path)` | A file's definitions — its shape, not its text. |
+| `head(path, lines=40)` | The first N lines. |
+| `slice_lines(path, start, end)` | Lines `start`..`end`, 1-indexed, inclusive. |
+| `write(path, text)` | Writes, and refreshes `FILES`. |
+| `edit(path, old, new, count=1)` | Exact replacement; refuses when ambiguous. |
+| `sh(command, cwd=None)` | `(exit_code, stdout, stderr)`. |
+
+### Why these exist rather than being left to the caller
+
+A kernel only saves anything if the reduction happens *here*. Loading a hundred
+files and then printing them back out costs exactly what reading them one at a
+time would have cost — the namespace added a step and saved nothing.
+
+That mistake is easy precisely because `print(FILES[path])` is one short line
+while writing a grep by hand is five. So the short line is the reducing one:
+`load` never prints a file, `grep` returns matches rather than contents, and
+`outline` returns shape rather than text. Reaching for a whole file is still
+possible and still sometimes right — it is just no longer the path of least
+resistance.
+
+`FILES` survives `pa kernel reset` as a name but not as data: the toolkit is
+plumbing, its contents are yours, and "empty the namespace" has to mean it.
+
 ## The discipline
 
 1. **Load once, in the kernel.** Never pipe a large file through the

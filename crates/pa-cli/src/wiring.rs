@@ -11,6 +11,7 @@ use pa_app::autonomy::AutonomyService;
 use pa_app::compaction::CompactionService;
 use pa_app::goals::GoalService;
 use pa_app::harness::HarnessService;
+use pa_app::review::ReviewService;
 use pa_app::heartbeats::HeartbeatService;
 use pa_app::kernel::KernelService;
 use pa_app::messaging::MessagingService;
@@ -46,7 +47,8 @@ pub struct App {
     pub runner: Arc<dyn AgentRunner>,
 
     pub session_service: SessionService,
-    pub harness: HarnessService,
+    pub harness: Arc<HarnessService>,
+    pub review: ReviewService,
     pub subagents: SubagentService,
     pub messaging: MessagingService,
     pub goals: Arc<GoalService>,
@@ -149,9 +151,22 @@ impl App {
             transcript.clone(),
         ));
 
+        let harness = Arc::new(HarnessService::new(
+            env.clone(),
+            harness_store.clone(),
+            transcript.clone(),
+        ));
+
         Ok(Self {
             session_service,
-            harness: HarnessService::new(env.clone(), harness_store, transcript.clone()),
+            review: ReviewService::new(
+                sessions.clone(),
+                transcript.clone(),
+                harness_store,
+                runner_registry.clone(),
+                harness.clone(),
+            ),
+            harness,
             subagents: SubagentService::new(
                 env.clone(),
                 sessions.clone(),

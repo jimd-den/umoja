@@ -10,7 +10,7 @@ BIN_DIR="${PA_BIN_DIR:-$HOME/.local/bin}"
 
 say() { printf '  %s\n' "$*"; }
 
-echo "prime-agent"
+echo "umoja"
 echo
 
 if ! command -v cargo >/dev/null 2>&1; then
@@ -28,18 +28,18 @@ say "linked $BIN_DIR/pa"
 # The skill itself is discoverable by anything that reads the cross-harness
 # location; a symlink makes it visible to Claude Code without a second copy.
 CLAUDE_SKILLS="$HOME/.claude/skills"
-if [ -d "$CLAUDE_SKILLS" ] && [ ! -e "$CLAUDE_SKILLS/prime-agent" ]; then
-  ln -s "$SKILL_DIR" "$CLAUDE_SKILLS/prime-agent"
-  say "linked $CLAUDE_SKILLS/prime-agent"
+if [ -d "$CLAUDE_SKILLS" ] && [ ! -e "$CLAUDE_SKILLS/umoja" ]; then
+  ln -s "$SKILL_DIR" "$CLAUDE_SKILLS/umoja"
+  say "linked $CLAUDE_SKILLS/umoja"
 fi
 
 # opencode has no skills concept, so the equivalent entry point is a custom
 # command. It points at SKILL.md rather than copying it, so there is still only
 # one source of truth to edit.
 OPENCODE_CMD="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/command"
-if command -v opencode >/dev/null 2>&1 && [ ! -e "$OPENCODE_CMD/prime-agent.md" ]; then
+if command -v opencode >/dev/null 2>&1 && [ ! -e "$OPENCODE_CMD/umoja.md" ]; then
   mkdir -p "$OPENCODE_CMD"
-  cat > "$OPENCODE_CMD/prime-agent.md" <<EOF
+  cat > "$OPENCODE_CMD/umoja.md" <<EOF
 ---
 description: Prime Agent capabilities — persistent kernel, continual harness, subagents, goals, schedules, autonomous gates
 ---
@@ -53,7 +53,7 @@ so the data never enters this conversation.
 
 Task: \$ARGUMENTS
 EOF
-  say "wrote $OPENCODE_CMD/prime-agent.md  (use: /prime-agent)"
+  say "wrote $OPENCODE_CMD/umoja.md  (use: /umoja)"
 fi
 
 echo

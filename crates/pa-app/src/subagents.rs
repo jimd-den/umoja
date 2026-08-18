@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
 use pa_domain::prelude::*;
 use pa_domain::transcript::{TranscriptEvent, TranscriptRecord};
 
@@ -60,9 +61,12 @@ impl SubagentService {
         }
     }
 
-    /// Admits a child and returns its handle. Never its answer.
-    pub fn spawn(&self, request: Spawn) -> Result<SpawnHandle> {
-        let now = self.env.now();
+    /// Admits a child: creates its session, registers it, and hands back
+    /// everything a run needs.
+    ///
+    /// Shared by [`Self::spawn`] and [`Self::call`], which differ only in
+    /// whether they wait for the answer.
+    fn admit(&self, request: &Spawn, now: DateTime<Utc>) -> Result<(Subagent, Session)> {
         let parent = self.sessions.resolve(&request.parent_selector)?;
 
         // Depth is checked before anything is created, so a refusal leaves no
@@ -76,7 +80,7 @@ impl SubagentService {
 
         let child_id = self.env.id(Ids::SUBAGENT);
         let session_id = self.env.id(Ids::SESSION);
-        let name = match request.name {
+        let name = match request.name.clone() {
             Some(raw) => Session::normalise_name(&raw)?,
             None => Session::normalise_name(&child_id)?,
         };
@@ -85,13 +89,17 @@ impl SubagentService {
             return Err(DomainError::conflict("subagent name", name));
         }
 
-        let runner_name = request.runner.unwrap_or_else(|| parent.runner.clone());
+        let runner_name = request
+            .runner
+            .clone()
+            .unwrap_or_else(|| parent.runner.clone());
         // An exact model was asked for or the parent's is inherited. There is
         // deliberately no fallback to "some other model that is available":
         // silently answering with a different mind than the one requested is
         // worse than failing.
         let model = request
             .model
+            .clone()
             .or_else(|| parent.model.clone())
             .unwrap_or_else(|| "default".to_string());
 
@@ -114,13 +122,13 @@ impl SubagentService {
         };
         self.sessions.insert(&child_session)?;
 
-        let mut child = Subagent {
-            child_id: child_id.clone(),
+        let child = Subagent {
+            child_id,
             parent_session_id: parent.id.clone(),
-            session_id: session_id.clone(),
-            name: name.clone(),
-            session_dir: session_dir.clone(),
-            model: model.clone(),
+            session_id,
+            name,
+            session_dir,
+            model,
             runner: runner_name,
             prompt: prompt.to_string(),
             depth: child_depth,
@@ -133,8 +141,52 @@ impl SubagentService {
         };
         self.registry.insert(&child)?;
 
-        let run = RunRequest::new(&session_id, prompt, &parent.workdir)?
-            .with_model(Some(model.clone()))
+        Ok((child, child_session))
+    }
+
+    /// Records a child that never got off the ground.
+    ///
+    /// It stays in the registry as a failed entry rather than vanishing,
+    /// because a delegation that never ran is something the parent needs to
+    /// find out about.
+    fn fail_to_launch(
+        &self,
+        child: &mut Subagent,
+        now: DateTime<Utc>,
+        error: &DomainError,
+    ) -> Result<()> {
+        child.status = SubagentStatus::Failed;
+        child.last_error = Some(error.to_string());
+        self.registry.update(child)?;
+        self.transcript.append(&TranscriptRecord::new(
+            &child.parent_session_id,
+            now,
+            TranscriptEvent::Error {
+                context: format!("spawn {}", child.name),
+                detail: error.to_string(),
+            },
+        ))
+    }
+
+    fn note_admitted(&self, child: &Subagent, now: DateTime<Utc>) -> Result<()> {
+        self.transcript.append(&TranscriptRecord::new(
+            &child.parent_session_id,
+            now,
+            TranscriptEvent::SubagentAdmitted {
+                child_id: child.child_id.clone(),
+                name: child.name.clone(),
+                model: child.model.clone(),
+            },
+        ))
+    }
+
+    /// Admits a child and returns its handle. Never its answer.
+    pub fn spawn(&self, request: Spawn) -> Result<SpawnHandle> {
+        let now = self.env.now();
+        let (mut child, child_session) = self.admit(&request, now)?;
+
+        let run = RunRequest::new(&child.session_id, &child.prompt, &child_session.workdir)?
+            .with_model(Some(child.model.clone()))
             .with_system_prompt(request.system_prompt)
             .detached();
 
@@ -148,42 +200,89 @@ impl SubagentService {
             Ok(outcome) => {
                 child.status = SubagentStatus::Running;
                 if let Some(pid) = outcome.pid {
-                    let mut session = child_session.clone();
+                    let mut session = child_session;
                     session.pid = Some(pid);
                     self.sessions.update(&session)?;
                 }
             }
             Err(error) => {
-                // The child failed to launch. It stays in the registry as a
-                // failed entry rather than vanishing, because a delegation that
-                // never ran is something the parent needs to find out about.
-                child.status = SubagentStatus::Failed;
-                child.last_error = Some(error.to_string());
-                self.registry.update(&child)?;
-                self.transcript.append(&TranscriptRecord::new(
-                    &parent.id,
-                    now,
-                    TranscriptEvent::Error {
-                        context: format!("spawn {name}"),
-                        detail: error.to_string(),
-                    },
-                ))?;
+                self.fail_to_launch(&mut child, now, &error)?;
                 return Err(error);
             }
         }
 
         self.registry.update(&child)?;
-        self.transcript.append(&TranscriptRecord::new(
-            &parent.id,
-            now,
-            TranscriptEvent::SubagentAdmitted {
-                child_id: child_id.clone(),
-                name,
-                model,
-            },
-        ))?;
+        self.note_admitted(&child, now)?;
 
         Ok(child.handle())
+    }
+
+    /// Delegates and **waits** — `rlm(...)` used as a function call rather
+    /// than a fan-out.
+    ///
+    /// # Why this exists alongside [`Self::spawn`]
+    ///
+    /// Fan-out is the right shape whenever the parent has other work to do,
+    /// and it is why `spawn` refuses to block. But a child's answer is
+    /// sometimes the *input to the next line of code* — a second opinion to
+    /// compare against, a classification to branch on, a summary to index.
+    /// Routing that through an inbox means writing the continuation as a
+    /// separate turn, which is a great deal of ceremony for one value.
+    ///
+    /// So this waits, and pays for waiting: one child at a time, the parent
+    /// idle meanwhile. Reach for [`Self::spawn`] whenever the answer is not
+    /// needed before the turn ends.
+    pub fn call(&self, request: Spawn, timeout_secs: Option<u64>) -> Result<CallResult> {
+        let now = self.env.now();
+        let (mut child, child_session) = self.admit(&request, now)?;
+
+        let mut run = RunRequest::new(&child.session_id, &child.prompt, &child_session.workdir)?
+            .with_model(Some(child.model.clone()))
+            .with_system_prompt(request.system_prompt);
+        if let Some(seconds) = timeout_secs {
+            run.timeout_secs = seconds;
+        }
+
+        // Marked running before the call rather than after it: this blocks for
+        // as long as the child takes, and anything inspecting the registry
+        // meanwhile should see work in progress, not a child stuck at
+        // `admitted`.
+        child.status = SubagentStatus::Running;
+        self.registry.update(&child)?;
+        self.note_admitted(&child, now)?;
+
+        let outcome = match self
+            .runners
+            .get(&child.runner)
+            .and_then(|runner| runner.run(&run))
+        {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.fail_to_launch(&mut child, now, &error)?;
+                return Err(error);
+            }
+        };
+
+        // A child that ran and failed is still a child that ran, so it is
+        // settled with what it actually cost. The caller is told it failed
+        // rather than handed an empty string that reads like an answer.
+        let status = if outcome.ok {
+            SubagentStatus::Completed
+        } else {
+            child.last_error = outcome.error.clone();
+            self.registry.update(&child)?;
+            SubagentStatus::Failed
+        };
+        let settled = self.settle(&request.parent_selector, &child.name, status, outcome.usage)?;
+
+        Ok(CallResult {
+            handle: settled.handle(),
+            ok: outcome.ok,
+            text: outcome.text,
+            usage: outcome.usage,
+            error: outcome.error,
+            duration_ms: outcome.duration_ms,
+        })
     }
 
     pub fn list(&self, parent_selector: &str, include_deleted: bool) -> Result<Vec<Subagent>> {
@@ -328,6 +427,82 @@ mod tests {
             runner: None,
             system_prompt: None,
         })
+    }
+
+    fn call(fixture: &Fixture, parent: &str, name: &str) -> Result<CallResult> {
+        fixture.subagents.call(
+            Spawn {
+                parent_selector: parent.into(),
+                prompt: "is this a breaking change?".into(),
+                name: Some(name.into()),
+                model: None,
+                runner: None,
+                system_prompt: None,
+            },
+            None,
+        )
+    }
+
+    #[test]
+    fn a_call_waits_and_comes_back_with_the_answer() {
+        let fixture = fixture(1);
+        let parent = root(&fixture);
+
+        let result = call(&fixture, &parent.id, "reviewer").unwrap();
+
+        // The whole difference from `spawn`: there is an answer here.
+        assert!(result.ok);
+        assert_eq!(result.text, "ran: is this a breaking change?");
+
+        // And it really ran in the foreground. A detached run would have come
+        // back with a pid and no text at all.
+        let requests = fixture.runner.calls.lock().unwrap();
+        assert!(!requests[0].detached);
+    }
+
+    #[test]
+    fn a_call_settles_its_child_and_charges_the_parent_once() {
+        let fixture = fixture(1);
+        let parent = root(&fixture);
+
+        call(&fixture, &parent.id, "reviewer").unwrap();
+
+        let child = fixture.subagents.get(&parent.id, "reviewer").unwrap();
+        assert_eq!(child.status, SubagentStatus::Completed);
+        assert!(child.usage_attributed);
+
+        // Waiting for a child is exactly when its cost is known, so there is
+        // no reason to make the caller run `settle` by hand afterwards.
+        let parent_session = fixture.sessions.get(&parent.id).unwrap();
+        assert_eq!(parent_session.usage.attributed_child_tokens, 15);
+    }
+
+    #[test]
+    fn a_child_that_ran_and_failed_says_so_rather_than_answering_emptily() {
+        let fixture = fixture(1);
+        let parent = root(&fixture);
+        *fixture.runner.reply.lock().unwrap() = Some(RunOutcome::failure("model refused", Some(1)));
+
+        let result = call(&fixture, &parent.id, "reviewer").unwrap();
+
+        // An empty string that reads like an answer is the failure mode this
+        // guards against: `ok` is what a caller branches on.
+        assert!(!result.ok);
+        assert_eq!(result.error.as_deref(), Some("model refused"));
+
+        let child = fixture.subagents.get(&parent.id, "reviewer").unwrap();
+        assert_eq!(child.status, SubagentStatus::Failed);
+        assert_eq!(child.last_error.as_deref(), Some("model refused"));
+    }
+
+    #[test]
+    fn a_call_obeys_the_same_depth_limit_as_a_spawn() {
+        let fixture = fixture(0);
+        let parent = root(&fixture);
+
+        // Blocking is not a way around the recursion limit.
+        assert!(call(&fixture, &parent.id, "reviewer").is_err());
+        assert!(fixture.sessions.list().unwrap().len() == 1);
     }
 
     #[test]

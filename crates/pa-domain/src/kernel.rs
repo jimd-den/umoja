@@ -159,8 +159,14 @@ fn clip(text: &str, max_bytes: usize) -> (String, usize) {
     let dropped = tail_start - head_end;
     let mut out = String::with_capacity(max_bytes + 64);
     out.push_str(&text[..head_end]);
+    // The note teaches rather than just reporting the loss. Hitting the clip
+    // is the moment the discipline is most likely to be forgotten and most
+    // cheaply restored: the data is already loaded, so the next call really
+    // can be `grep(...)` instead of the same print with a bigger budget.
     out.push_str(&format!(
-        "\n... [{dropped} bytes clipped; run again printing a smaller slice] ...\n"
+        "\n... [{dropped} bytes clipped — the value is still bound here, so \
+reduce instead of reprinting: grep(...), outline(path), len(x), x[:5], \
+Counter(...)] ...\n"
     ));
     out.push_str(&text[tail_start..]);
     (out, dropped)

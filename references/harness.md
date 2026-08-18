@@ -43,6 +43,36 @@ pa harness prompt                # the block to splice into a prompt
 memories cost a hundred lines, not a hundred paragraphs. `pa prompt` emits the
 harness, the installed skills and any live goal as a single block.
 
+## Asking what is worth remembering
+
+```bash
+pa refine review                 # propose, write nothing
+pa refine review --apply         # write them, one refinement each
+pa refine review --raw           # the reviewer's reply, verbatim
+pa refine review -n 100          # look further back
+```
+
+This reads the session's recent trajectory and its existing entries, and asks
+the session's own harness the four questions above. It **proposes only** unless
+`--apply` is given.
+
+That separation is the whole design. The evidence rule only bites if something
+stands between noticing a lesson and recording one; a review that wrote
+straight to the harness would fill it with confident generalisations drawn from
+single events, each carrying a plausible sentence in its evidence field, and
+the harness would be worse than empty because every entry would look justified.
+
+Two things follow from that:
+
+- **A proposal with no evidence is dropped, never repaired.** Inventing the
+  justification is precisely the thing that must not happen.
+- **Proposing nothing is a good answer, and the common one.** An empty
+  trajectory is not even sent to a model — asking one to review nothing
+  reliably produces invented lessons.
+
+Applying writes one refinement per proposal, so a review that got three things
+right and one wrong is one `pa refine rollback` from being right.
+
 ## Undoing
 
 Every write records a before/after snapshot, so rolling back is mechanical

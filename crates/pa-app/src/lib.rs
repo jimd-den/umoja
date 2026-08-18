@@ -16,6 +16,7 @@ pub mod goals;
 pub mod heartbeats;
 pub mod messaging;
 pub mod schedules;
+pub mod review;
 pub mod skills;
 pub mod sessions;
 pub mod subagents;

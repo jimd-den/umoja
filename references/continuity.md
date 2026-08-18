@@ -2,6 +2,31 @@
 
 Goals, heartbeats, schedules, autonomous mode and the tick that drives them.
 
+## Reattaching
+
+```bash
+pa attach                 # this directory's session
+pa attach api-reviewer    # any session, by name or id
+pa attach --no-follow     # the backlog and the header, then exit
+pa log -f                 # just the stream
+```
+
+Prints what the session is, what it holds — tokens, children, live children, a
+goal if one is set — and then follows its transcript until the session stops.
+
+### Why this is a read rather than a handshake
+
+Prime Agent attaches to a live worker process holding a conversation. UMOJA has
+no such process to hold: `pa` exits after every command, work runs detached,
+and everything that matters — the namespace, the harness, the transcript, the
+children — is on disk precisely so no terminal owns it.
+
+That makes reattaching the better bargain. There is no session to lose when a
+shell dies, no daemon to resurrect, and one session can be attached from
+several terminals at once without any of them fighting over a pty. Following a
+session that has already stopped prints its backlog and exits, rather than
+waiting forever for a process that will never append again.
+
 ## Goals
 
 A durable objective the harness keeps presenting until it is done.

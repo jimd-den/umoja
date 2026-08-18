@@ -241,8 +241,13 @@ pub fn shutdown(app: &App, force: bool) -> Result<Output> {
     ))
 }
 
-pub fn log(app: &App, lines: usize) -> Result<Output> {
+pub fn log(app: &App, lines: usize, follow: bool) -> Result<Output> {
     let session = app.session()?;
+
+    if follow {
+        return follow_transcript(app, &session, lines);
+    }
+
     let records = app.transcript.read(&session.id, Some(lines))?;
 
     let text = records
@@ -259,6 +264,105 @@ pub fn log(app: &App, lines: usize) -> Result<Output> {
         },
         json!({ "session": session.name, "events": records }),
     ))
+}
+
+/// Reattach to a session.
+///
+/// # Why this is not a terminal multiplexer
+///
+/// Prime Agent attaches to a live worker process holding a conversation. This
+/// tool has no such process to hold: `pa` exits after every command, work runs
+/// detached, and everything that matters — the namespace, the harness, the
+/// transcript, the children — is on disk precisely so that no terminal owns
+/// it.
+///
+/// That makes reattaching a *read* rather than a handshake, and it is the
+/// better bargain: there is no session to lose when a shell dies, no daemon to
+/// resurrect, and a session can be attached from several terminals at once
+/// without any of them fighting over a pty.
+pub fn attach(app: &App, selector: Option<&str>, lines: usize, follow: bool) -> Result<Output> {
+    let session = match selector {
+        Some(selector) => app.sessions.resolve(selector)?,
+        None => app.session()?,
+    };
+
+    let children = app.subagents.list(&session.id, false)?;
+    let live = children.iter().filter(|c| c.status.is_live()).count();
+    let goal = app.goals.get(&session.id)?;
+
+    let mut header = format!(
+        "{} · {} · {} on {}\n{} tokens · {} children ({live} live)",
+        session.name,
+        session.status.label(),
+        session.runner,
+        session.model.as_deref().unwrap_or("default"),
+        session.usage.total_tokens(),
+        children.len(),
+    );
+    if let Some(goal) = &goal {
+        header.push_str(&format!("\ngoal: {}", clip(&goal.objective, 60)));
+    }
+
+    if !follow {
+        let records = app.transcript.read(&session.id, Some(lines))?;
+        let body = records
+            .iter()
+            .map(|record| format!("{}  {}", record.at.format("%H:%M:%S"), record.summary()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Ok(Output::new(
+            format!("{header}\n\n{body}"),
+            json!({ "session": session, "children": children, "events": records }),
+        ));
+    }
+
+    println!("{header}\n");
+    follow_transcript(app, &session, lines)
+}
+
+/// Prints the backlog, then every record as it arrives.
+///
+/// Polls rather than watching the filesystem: the transcript is append-only
+/// and a second of latency on a log nobody is staring at continuously is not
+/// worth an inotify dependency and its portability story.
+fn follow_transcript(app: &App, session: &Session, backlog: usize) -> Result<Output> {
+    let mut seen = 0usize;
+    let mut printed_any = false;
+
+    loop {
+        let records = app.transcript.read(&session.id, None)?;
+
+        // The first pass shows a bounded backlog; every pass after it shows
+        // only what is new.
+        let from = if seen == 0 {
+            records.len().saturating_sub(backlog)
+        } else {
+            seen
+        };
+
+        for record in records.iter().skip(from) {
+            println!(
+                "{}  {}",
+                record.at.format("%H:%M:%S"),
+                record.summary()
+            );
+            printed_any = true;
+        }
+        seen = records.len();
+
+        // A session that has stopped will not append anything else, so
+        // following it forever would be a hang dressed up as a feature.
+        let current = app.sessions.get(&session.id)?;
+        if !matches!(current.status, SessionStatus::Running) {
+            return Ok(Output::new(
+                format!("\n{} is {}", current.name, current.status.label()),
+                json!({ "session": current.name, "status": current.status.label() }),
+            ));
+        }
+
+        let _ = printed_any;
+        std::thread::sleep(std::time::Duration::from_millis(700));
+    }
 }
 
 pub fn tick(app: &App, dry_run: bool) -> Result<Output> {

@@ -9,7 +9,7 @@ use pa_domain::prelude::*;
 use serde_json::json;
 
 use crate::cli::{
-    AgentCommand, HarnessCommand, KernelCommand, RefineCommand, SendArgs, SpawnArgs,
+    AgentCommand, CallArgs, HarnessCommand, KernelCommand, RefineCommand, SendArgs, SpawnArgs,
 };
 use crate::exit;
 use crate::output::{clip, table, Output};
@@ -273,6 +273,76 @@ pub fn refine(app: &App, command: &RefineCommand) -> Result<Output> {
     let session = app.session()?;
 
     match command {
+        RefineCommand::Review { window, apply, raw } => {
+            let review = app.review.review(&session.id, *window)?;
+
+            if *raw {
+                return Ok(Output::new(
+                    review.raw.clone(),
+                    json!({ "raw": review.raw }),
+                ));
+            }
+
+            if let Some(problem) = &review.parse_error {
+                // The reply is kept rather than discarded, so `--raw` can show
+                // what actually came back.
+                return Err(DomainError::invalid(format!(
+                    "{problem}; see `pa refine review --raw`"
+                )));
+            }
+
+            if review.proposals.is_empty() {
+                // The common and healthy answer. Said plainly so it does not
+                // read as a broken review.
+                return Ok(Output::new(
+                    format!(
+                        "nothing worth remembering from {} records",
+                        review.records_reviewed
+                    ),
+                    json!({ "proposals": [], "records_reviewed": review.records_reviewed }),
+                ));
+            }
+
+            let applied = if *apply {
+                app.review.apply(&session.id, &review.proposals)?
+            } else {
+                Vec::new()
+            };
+
+            let rows: Vec<Vec<String>> = review
+                .proposals
+                .iter()
+                .map(|proposal| {
+                    vec![
+                        proposal.name.clone(),
+                        proposal.kind.label().to_string(),
+                        proposal.scope.label().to_string(),
+                        clip(&proposal.body, 40),
+                        clip(&proposal.evidence, 34),
+                    ]
+                })
+                .collect();
+
+            let mut text = table(&["name", "kind", "scope", "body", "evidence"], &rows);
+            text.push_str(&if *apply {
+                format!(
+                    "\n\napplied {}; undo any one with `pa refine rollback <id>`",
+                    applied.len()
+                )
+            } else {
+                "\n\nproposed only — re-run with `--apply` to write them".to_string()
+            });
+
+            Ok(Output::new(
+                text,
+                json!({
+                    "proposals": review.proposals,
+                    "records_reviewed": review.records_reviewed,
+                    "applied": applied.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
+                }),
+            ))
+        }
+
         RefineCommand::List { limit, global } => {
             let scope = if *global { None } else { Some(session.id.as_str()) };
             let refinements = app.harness.refinements(scope, Some(*limit))?;
@@ -349,6 +419,8 @@ pub fn agent(app: &App, command: &AgentCommand) -> Result<Output> {
 
     match command {
         AgentCommand::Spawn(args) => spawn(app, &session, args),
+
+        AgentCommand::Call(args) => call(app, &session, args),
 
         AgentCommand::List { all } => {
             let children = app.subagents.list(&session.id, *all)?;
@@ -453,6 +525,54 @@ fn spawn(app: &App, session: &Session, args: &SpawnArgs) -> Result<Output> {
             "depth": handle.depth,
         }),
     ))
+}
+
+/// The blocking counterpart of [`spawn`].
+///
+/// Exits non-zero when the child failed, so a shell — or the kernel's `rlm`
+/// helper — can tell a refusal from an answer without parsing the text.
+fn call(app: &App, session: &Session, args: &CallArgs) -> Result<Output> {
+    let result = app.subagents.call(
+        Spawn {
+            parent_selector: session.id.clone(),
+            prompt: args.prompt.clone(),
+            name: args.name.clone(),
+            model: args.model.clone(),
+            runner: args.with.clone(),
+            system_prompt: args.system_prompt.clone(),
+        },
+        args.timeout,
+    )?;
+
+    let json = json!({
+        "child_id": result.handle.child_id,
+        "name": result.handle.name,
+        "session_id": result.handle.session_id,
+        "model": result.handle.model,
+        "depth": result.handle.depth,
+        "ok": result.ok,
+        "text": result.text,
+        "error": result.error,
+        "input_tokens": result.usage.input_tokens,
+        "output_tokens": result.usage.output_tokens,
+        "duration_ms": result.duration_ms,
+    });
+
+    if result.ok {
+        // Only the answer on stdout. Everything about how it was produced is
+        // in `--json`, so the plain form can be piped straight into something.
+        Ok(Output::new(result.text, json))
+    } else {
+        Ok(Output::new(
+            format!(
+                "{} failed: {}",
+                result.handle.name,
+                result.error.as_deref().unwrap_or("no reason given")
+            ),
+            json,
+        )
+        .with_code(1))
+    }
 }
 
 pub fn send(app: &App, args: &SendArgs) -> Result<Output> {

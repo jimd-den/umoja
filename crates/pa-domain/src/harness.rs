@@ -283,6 +283,162 @@ impl Refinement {
     }
 }
 
+/// One harness change a review pass thinks is worth making.
+///
+/// # Why a proposal is not an entry
+///
+/// The discipline the harness enforces — every entry justified by evidence
+/// somebody can weigh later — only works if a human, or at least a second
+/// decision, stands between noticing something and writing it down. A review
+/// that wrote directly to the harness would fill it with plausible-sounding
+/// lessons drawn from single events, which is precisely the failure mode
+/// `--evidence` exists to prevent.
+///
+/// So a review returns these, and applying them is a separate, explicit act.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Proposal {
+    pub name: String,
+    pub kind: EntryKind,
+    pub scope: HarnessScope,
+    pub body: String,
+    pub evidence: String,
+    pub outcome: Option<String>,
+}
+
+impl Proposal {
+    /// Reads proposals out of a model's reply.
+    ///
+    /// Tolerant of the prose harnesses like to wrap JSON in — the first `[`
+    /// through the last `]` is taken as the payload — because failing the
+    /// whole review over a "Here's what I found:" preamble would make this
+    /// unusable against real runners.
+    ///
+    /// Malformed *entries* are a different matter from malformed output: a
+    /// proposal with no evidence is dropped rather than repaired, since
+    /// inventing the justification is exactly the thing that must not happen.
+    pub fn parse_many(reply: &str) -> Result<Vec<Self>> {
+        let start = reply.find('[');
+        let end = reply.rfind(']');
+        let payload = match (start, end) {
+            (Some(start), Some(end)) if end > start => &reply[start..=end],
+            // No array at all is a legitimate answer: nothing was worth
+            // remembering. It is not an error, and it is the common case.
+            _ => return Ok(Vec::new()),
+        };
+
+        let rows: Vec<RawProposal> = serde_json::from_str(payload)
+            .map_err(|error| DomainError::invalid(format!("unreadable review: {error}")))?;
+
+        Ok(rows.into_iter().filter_map(RawProposal::into_proposal).collect())
+    }
+}
+
+/// The wire shape, deliberately forgiving where the strict type is not: a
+/// model that writes `"kind": "note"` instead of `"prompt-note"` should lose
+/// that one proposal, not the whole review.
+#[derive(Debug, Deserialize)]
+struct RawProposal {
+    name: String,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
+    body: String,
+    #[serde(default)]
+    evidence: Option<String>,
+    #[serde(default)]
+    outcome: Option<String>,
+}
+
+impl RawProposal {
+    fn into_proposal(self) -> Option<Proposal> {
+        let name = HarnessEntry::normalise_name(&self.name).ok()?;
+        let body = self.body.trim().to_string();
+        let evidence = self.evidence.unwrap_or_default().trim().to_string();
+        // The one rule that is not negotiable anywhere in this crate.
+        if body.is_empty() || evidence.is_empty() {
+            return None;
+        }
+        Some(Proposal {
+            name,
+            kind: self
+                .kind
+                .as_deref()
+                .and_then(|k| EntryKind::parse(k).ok())
+                .unwrap_or(EntryKind::Memory),
+            scope: self
+                .scope
+                .as_deref()
+                .and_then(|s| HarnessScope::parse(s).ok())
+                .unwrap_or(HarnessScope::Local),
+            body,
+            evidence,
+            outcome: self.outcome.map(|o| o.trim().to_string()).filter(|o| !o.is_empty()),
+        })
+    }
+}
+
+
+#[cfg(test)]
+mod proposal_tests {
+    use super::*;
+
+    #[test]
+    fn json_is_found_inside_whatever_prose_the_model_wrapped_it_in() {
+        let reply = r#"Here is what I noticed:
+        [{"name": "prefers-rust", "kind": "memory", "body": "Wants memory-safe languages.",
+          "evidence": "Asked for Rust twice."}]
+        Let me know if you want these applied."#;
+
+        let proposals = Proposal::parse_many(reply).unwrap();
+        assert_eq!(proposals.len(), 1);
+        assert_eq!(proposals[0].name, "prefers-rust");
+    }
+
+    #[test]
+    fn a_proposal_with_no_evidence_is_dropped_not_repaired() {
+        // The whole discipline of this module. A review that invented the
+        // justification would defeat the reason `--evidence` is required.
+        let reply = r#"[
+          {"name": "unjustified", "body": "They like tabs."},
+          {"name": "justified", "body": "They like tabs.", "evidence": "Said so, twice."}
+        ]"#;
+
+        let proposals = Proposal::parse_many(reply).unwrap();
+        assert_eq!(proposals.len(), 1);
+        assert_eq!(proposals[0].name, "justified");
+    }
+
+    #[test]
+    fn one_unreadable_field_costs_that_proposal_its_kind_not_the_review() {
+        let reply = r#"[{"name": "n", "kind": "nonsense", "scope": "nonsense",
+                         "body": "b", "evidence": "e"}]"#;
+
+        let proposals = Proposal::parse_many(reply).unwrap();
+        // Falls back rather than failing: the lesson is worth more than the
+        // label, and a wrong label is one `pa harness` call to fix.
+        assert_eq!(proposals[0].kind, EntryKind::Memory);
+        assert_eq!(proposals[0].scope, HarnessScope::Local);
+    }
+
+    #[test]
+    fn nothing_worth_remembering_is_an_answer_rather_than_an_error() {
+        assert!(Proposal::parse_many("I found nothing worth keeping.")
+            .unwrap()
+            .is_empty());
+        assert!(Proposal::parse_many("[]").unwrap().is_empty());
+    }
+
+    #[test]
+    fn genuinely_broken_json_is_reported() {
+        // An unterminated array is indistinguishable from prose with a stray
+        // bracket, so it reads as "nothing proposed" — but a complete array
+        // whose contents are malformed is a real failure worth surfacing.
+        assert!(Proposal::parse_many(r#"[{"name": }]"#).is_err());
+        assert!(Proposal::parse_many(r#"[{"name": "n""#).unwrap().is_empty());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

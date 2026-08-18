@@ -59,6 +59,26 @@ pub struct SpawnHandle {
     pub depth: u8,
 }
 
+/// What comes back from a **blocking** delegation.
+///
+/// [`SpawnHandle`] is deliberately answerless because fan-out is the common
+/// case. This is the other one: the parent asked a question whose answer is
+/// the input to its next step, and waited for it. Both the text and what it
+/// cost come back, so a caller can decide whether the wait was worth it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallResult {
+    pub handle: SpawnHandle,
+    /// False when the child ran and failed. The text may still hold whatever
+    /// it managed to say, so this is what a caller must branch on rather than
+    /// on the text being non-empty.
+    pub ok: bool,
+    pub text: String,
+    #[serde(default)]
+    pub usage: Usage,
+    pub error: Option<String>,
+    pub duration_ms: u64,
+}
+
 /// A reusable delegation role, as stored in the harness.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubagentSpec {

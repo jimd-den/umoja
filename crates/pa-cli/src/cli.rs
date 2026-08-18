@@ -73,6 +73,25 @@ pub enum Command {
     Log {
         #[arg(long, short = 'n', default_value_t = 40)]
         lines: usize,
+        /// Keep printing new events as they land, until interrupted.
+        #[arg(long, short = 'f')]
+        follow: bool,
+    },
+
+    /// Reattach to a session: what it is, what it has, and what it does next.
+    ///
+    /// The terminal that started a session does not own it — the work runs
+    /// detached and the state is on disk — so this can be run from anywhere,
+    /// any time, including after the original shell is gone.
+    Attach {
+        /// A session name or id. Defaults to this directory's session.
+        selector: Option<String>,
+        /// Print the backlog and exit instead of following.
+        #[arg(long)]
+        no_follow: bool,
+        /// How much backlog to show before following.
+        #[arg(long, short = 'n', default_value_t = 20)]
+        lines: usize,
     },
 
     /// The persistent namespace: prompt-as-a-variable.
@@ -236,6 +255,19 @@ pub struct RememberArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum RefineCommand {
+    /// Read this session's trajectory back and propose what is worth
+    /// remembering. Proposes only, unless `--apply` is given.
+    Review {
+        /// How many recent transcript records to review.
+        #[arg(long, short = 'n')]
+        window: Option<usize>,
+        /// Write the proposals as harness entries, one refinement each.
+        #[arg(long)]
+        apply: bool,
+        /// Print the reviewer's reply verbatim, before it was parsed.
+        #[arg(long)]
+        raw: bool,
+    },
     /// Recent harness changes, newest first.
     List {
         #[arg(long, short = 'n', default_value_t = 20)]
@@ -254,6 +286,9 @@ pub enum RefineCommand {
 pub enum AgentCommand {
     /// Admit a child agent. Returns a handle, never an answer.
     Spawn(SpawnArgs),
+    /// Delegate and wait, returning the child's answer. The blocking form of
+    /// `spawn`, for when the answer is the input to the next step.
+    Call(CallArgs),
     /// This session's children.
     List {
         #[arg(long)]
@@ -286,6 +321,23 @@ pub struct SpawnArgs {
     pub with: Option<String>,
     #[arg(long)]
     pub system_prompt: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct CallArgs {
+    pub prompt: String,
+    #[arg(long)]
+    pub name: Option<String>,
+    #[arg(long)]
+    pub model: Option<String>,
+    /// Override the harness this child runs on.
+    #[arg(long)]
+    pub with: Option<String>,
+    #[arg(long)]
+    pub system_prompt: Option<String>,
+    /// Give up after this long. The child is still recorded as failed.
+    #[arg(long)]
+    pub timeout: Option<u64>,
 }
 
 #[derive(Debug, Args)]

@@ -23,7 +23,12 @@ pub fn dispatch(cli: &Cli, app: &App) -> Result<Output> {
         Command::Status => lifecycle::status(app),
         Command::Doctor { fix } => lifecycle::doctor(app, *fix),
         Command::Shutdown { force } => lifecycle::shutdown(app, *force),
-        Command::Log { lines } => lifecycle::log(app, *lines),
+        Command::Log { lines, follow } => lifecycle::log(app, *lines, *follow),
+        Command::Attach {
+            selector,
+            no_follow,
+            lines,
+        } => lifecycle::attach(app, selector.as_deref(), *lines, !*no_follow),
         Command::Tick { dry_run } => lifecycle::tick(app, *dry_run),
 
         Command::Kernel(command) => work::kernel(app, command),

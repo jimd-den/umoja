@@ -44,7 +44,7 @@ pub mod prelude {
     pub use crate::error::{DomainError, Result};
     pub use crate::goal::{Goal, GoalBudget, GoalProgress, GoalStatus};
     pub use crate::harness::{
-        EntryKind, HarnessEntry, HarnessScope, Refinement, RefinementOp, Snapshot,
+        EntryKind, HarnessEntry, HarnessScope, Proposal, Refinement, RefinementOp, Snapshot,
     };
     pub use crate::heartbeat::{DeliveryMode, Heartbeat, HeartbeatOwner, HeartbeatStatus};
     pub use crate::ids::{IdGen, Ids};
@@ -58,7 +58,9 @@ pub mod prelude {
     pub use crate::schedule::{JobStatus, ScheduleSpec, ScheduledJob};
     pub use crate::session::{Session, SessionKind, SessionStatus, Usage};
     pub use crate::skill::{SkillKind, SkillManifest, SkillSource, Validation};
-    pub use crate::subagent::{DepthPolicy, SpawnHandle, Subagent, SubagentSpec, SubagentStatus};
+    pub use crate::subagent::{
+        CallResult, DepthPolicy, SpawnHandle, Subagent, SubagentSpec, SubagentStatus,
+    };
     pub use crate::timespec::{CronExpr, Interval};
     pub use crate::transcript::{TranscriptEvent, TranscriptRecord};
 }

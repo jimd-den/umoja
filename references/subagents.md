@@ -1,6 +1,42 @@
 # Subagents and messaging
 
-Prime Agent's `rlm(...)`: real child agents, admitted and then left to work.
+Real child agents. Two shapes: **admitted and left to work**, or **asked and
+waited for**.
+
+## Two shapes, and when each is right
+
+```bash
+pa agent spawn "Review the public API"   # returns a handle, immediately
+pa agent call  "Is this a breaking change?"  # returns the answer, eventually
+```
+
+`spawn` is the default and the cheaper one: it returns the instant the child is
+admitted, several can run at once, and the parent gets on with something else.
+
+`call` blocks, and pays for it — one child at a time, the parent idle
+meanwhile. It earns that cost in exactly one situation: **the answer is the
+input to the next step.** A classification to branch on, a second opinion to
+compare against, a summary to index. Routing those through an inbox means
+writing the continuation as a separate turn, which is a great deal of ceremony
+for one value.
+
+Inside the kernel, `call` is spelled `rlm` and returns a plain string:
+
+```bash
+pa kernel exec '
+verdicts = {p: rlm(f"Breaking change in {p}? yes/no + why") for p in changed}
+sum(1 for v in verdicts.values() if v.lower().startswith("yes"))'
+```
+
+A child that ran and failed raises `Delegation` rather than returning its error
+text, and `pa agent call` exits `1`. An error that reads like an answer is the
+one outcome worse than no answer.
+
+Both shapes obey the same depth limit, the same model rules and the same
+registry: a blocking call is not a way around anything, and `pa agent list`
+shows children created either way. `call` settles its child automatically —
+waiting for it is exactly when its cost is known, so making the caller run
+`pa agent settle` afterwards would be busywork.
 
 ## Spawning returns a handle, not an answer
 
