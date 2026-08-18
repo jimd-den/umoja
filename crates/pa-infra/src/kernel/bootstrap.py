@@ -247,6 +247,17 @@ def grep(pattern, where=None, context=0, limit=200, ignore_case=False):
         source = FILES.bytes_items()
     elif isinstance(where, Corpus):
         source = where.bytes_items()
+    elif isinstance(where, str):
+        # A glob, which is what anyone who just read `load("src/**/*.rs")`
+        # expects to be able to pass. Filtering the index beats re-walking
+        # the tree, and an unmatched glob returning nothing is a clearer
+        # answer than an AttributeError about .items().
+        import fnmatch as _fnmatch
+
+        chosen = [q for q in FILES.paths if _fnmatch.fnmatch(q, where)]
+        source = ((q, FILES.raw(q) or b"") for q in chosen)
+    elif isinstance(where, (list, tuple, set)):
+        source = ((q, FILES.raw(q) or b"") for q in where)
     else:
         # A plain dict of text, as handed in by a caller who built their own.
         source = (

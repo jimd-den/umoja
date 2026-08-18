@@ -68,6 +68,22 @@ saved nothing. This is *the* easy mistake, and it is easy because
 So the short lines are the reducing ones. Before any call that prints, ask:
 **am I about to print something I could search, count, or slice first?**
 
+### Climb the ladder before you print
+
+Measured on eight Dart files a real task actually needed: the declarations
+were **6% of the source bytes**. The other 94% was scrolled past. Reach for
+the cheapest rung that answers the question, and only fall to the next when
+it genuinely does not:
+
+1. `grep(...)` — you know roughly what you are looking for
+2. `outline(path)` — you need the shape, not the bodies
+3. `slice_lines(path, a, b)` — `outline` told you which lines
+4. `head(path)` — the answer really is near the top
+5. printing the whole text — **the last rung, and it needs a reason**
+
+Printing a file to \"get oriented\" is the failure mode wearing a disguise.
+`outline` is what orientation costs.
+
 ## The file toolkit
 
 Bound in every Python kernel, no import needed. `pa kernel vars` hides them, so
@@ -82,7 +98,7 @@ pa kernel exec 'print("\n".join(outline("src/lib.rs")))'
 | Call | Returns |
 |---|---|
 | `load(pattern, root=".")` | Indexes a glob into `FILES`. Records paths, reads nothing, prints a tally. |
-| `grep(pattern, where=None, context=0, limit=200, ignore_case=False)` | `path:line: text` matches — the answer, not the haystack. |
+| `grep(pattern, where=None, context=0, limit=200, ignore_case=False)` | `path:line: text` matches — the answer, not the haystack. `where` narrows it: a glob, a list of paths, or another corpus. |
 | `outline(path)` | A file's definitions, so you can decide where to look without reading the way there. |
 | `head(path, lines=40)` | The first N lines, for when a peek really is enough. |
 | `slice_lines(path, start, end)` | Lines `start`..`end`, 1-indexed, inclusive. |
@@ -93,6 +109,30 @@ pa kernel exec 'print("\n".join(outline("src/lib.rs")))'
 `outline`, `head`, `slice_lines` and `edit` read any path, indexed or not —
 being told "no definitions" because a path was never indexed is a wrong answer
 wearing a right answer's clothes.
+
+### Editing without reading the file
+
+`edit(path, old, new)` needs an exact anchor, and the obvious way to get one
+is to print the file and copy from it. That is how a session that indexed two
+hundred files still pays full price for eight of them — the single most
+expensive habit this skill exists to prevent, and the toolkit table above
+does not stop it.
+
+**Grep for the anchor instead. The match is the anchor.**
+
+```bash
+pa kernel exec 'for h in grep(r"required this.programmable", context=3): print(h)'
+pa kernel exec 'edit("lib/theme.dart", "  this.seedHue,", "  this.seedHue,\n  this.tint,")'
+```
+
+`grep(..., context=N)` hands back the surrounding lines, which is exactly the
+unique anchor `edit` wants, at the cost of six lines rather than six hundred.
+And `edit` refuses an ambiguous or missing match instead of guessing, so too
+short an anchor fails loudly and you widen the context. That refusal is what
+makes it safe never to see the rest of the file.
+
+The exception is a file you are *rewriting* rather than amending. Then read
+it — you are about to be responsible for all of it.
 
 ### The corpus is an index, not a cache
 
