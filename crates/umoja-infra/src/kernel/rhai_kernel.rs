@@ -275,6 +275,18 @@ fn outline_file(path: &str) -> String {
     }
 }
 
+fn is_ignored_path(path: &Path) -> bool {
+    for comp in path.components() {
+        if let std::path::Component::Normal(os_str) = comp {
+            let s = os_str.to_string_lossy();
+            if s == "target" || s == ".git" || s == "node_modules" || s == ".cargo" || s == "vendor" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn grep_path(target: &str, pattern: &str) -> Dynamic {
     let mut matches = Array::new();
     let pat_lower = pattern.to_lowercase();
@@ -302,7 +314,7 @@ fn grep_path(target: &str, pattern: &str) -> Dynamic {
 
     if let Ok(paths) = glob(&glob_pat) {
         for entry in paths.flatten() {
-            if entry.is_file() {
+            if entry.is_file() && !is_ignored_path(&entry) {
                 if let Ok(content) = std::fs::read_to_string(&entry) {
                     let path_str = entry.display().to_string();
                     for (idx, line) in content.lines().enumerate() {
@@ -413,7 +425,8 @@ impl RhaiKernel {
         if let Some(path) = self.history_file(session_id) {
             if path.exists() {
                 if let Ok(content) = std::fs::read_to_string(&path) {
-                    let engine = self.create_engine();
+                    let mut engine = self.create_engine();
+                    engine.on_print(|_| {});
                     for line in content.lines() {
                         let trimmed = line.trim();
                         if !trimmed.is_empty() {
