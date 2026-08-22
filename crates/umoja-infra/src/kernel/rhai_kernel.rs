@@ -32,6 +32,66 @@ pub struct RhaiKernel {
     max_operations: Option<u64>,
 }
 
+pub fn preprocess_raw_strings(input: &str) -> String {
+    let mut out = String::with_capacity(input.len() + 16);
+    let chars: Vec<char> = input.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        if chars[i] == 'r' && i + 1 < len && (chars[i + 1] == '"' || chars[i + 1] == '#') {
+            let mut h_count = 0;
+            let mut j = i + 1;
+            while j < len && chars[j] == '#' {
+                h_count += 1;
+                j += 1;
+            }
+
+            if j < len && chars[j] == '"' {
+                let content_start = j + 1;
+                let mut content_end = None;
+                let mut k = content_start;
+
+                while k < len {
+                    if chars[k] == '"' {
+                        let mut match_hashes = true;
+                        if k + h_count < len {
+                            for h in 0..h_count {
+                                if chars[k + 1 + h] != '#' {
+                                    match_hashes = false;
+                                    break;
+                                }
+                            }
+                        } else {
+                            match_hashes = false;
+                        }
+
+                        if match_hashes {
+                            content_end = Some(k);
+                            break;
+                        }
+                    }
+                    k += 1;
+                }
+
+                if let Some(end_idx) = content_end {
+                    let raw_str: String = chars[content_start..end_idx].iter().collect();
+                    if let Ok(escaped) = serde_json::to_string(&raw_str) {
+                        out.push_str(&escaped);
+                        i = end_idx + 1 + h_count;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        out.push(chars[i]);
+        i += 1;
+    }
+
+    out
+}
+
 impl RhaiKernel {
     pub fn new() -> Self {
         let max_operations = std::env::var("UMOJA_MAX_OPERATIONS")
@@ -204,8 +264,10 @@ impl KernelPort for RhaiKernel {
             }
         });
 
+        let preprocessed_code = preprocess_raw_strings(&request.code);
+
         let start = Instant::now();
-        let eval_res = engine.eval_with_scope::<Dynamic>(&mut session_lock.scope, &request.code);
+        let eval_res = engine.eval_with_scope::<Dynamic>(&mut session_lock.scope, &preprocessed_code);
         let duration = start.elapsed();
 
         let stdout = stdout_buffer
@@ -436,5 +498,17 @@ mod tests {
         assert!(grep_outcome.ok);
         let match_count: i64 = grep_outcome.result.unwrap().parse().unwrap();
         assert!(match_count > 0);
+    }
+
+    #[test]
+    fn raw_string_literals_evaluate_with_unescaped_quotes_and_backslashes() {
+        let kernel = RhaiKernel::new();
+        let code = r##"
+            let raw = r#"match esc { '\\' | '"' | '\'' => true, _ => false }"#;
+            raw.contains('\\') && raw.contains('"')
+        "##;
+        let outcome = kernel.execute(&ExecRequest::new("ses-1", code).unwrap()).unwrap();
+        assert!(outcome.ok, "error: {:?}", outcome.error);
+        assert_eq!(outcome.result.as_deref(), Some("true"));
     }
 }
