@@ -480,22 +480,39 @@ impl RhaiKernel {
             .map(|p| p.artifacts(session_id).join("rhai_history.jsonl"))
     }
 
+    fn scope_file(&self, session_id: &str) -> Option<PathBuf> {
+        self.paths
+            .as_ref()
+            .map(|p| p.artifacts(session_id).join("rhai_scope.json"))
+    }
+
     fn load_history_if_needed(&self, session_id: &str, state: &mut SessionState) {
         if state.initialized {
             return;
         }
         state.initialized = true;
 
-        if let Some(path) = self.history_file(session_id) {
-            if path.exists() {
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    let mut engine = self.create_engine();
-                    engine.on_print(|_| {});
+        if let Some(scope_path) = self.scope_file(session_id) {
+            if scope_path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&scope_path) {
+                    if let Ok(map) = serde_json::from_str::<HashMap<String, Value>>(&content) {
+                        for (k, v) in map {
+                            if let Ok(dyn_val) = rhai::serde::to_dynamic(&v) {
+                                state.scope.push(k, dyn_val);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(hist_path) = self.history_file(session_id) {
+            if hist_path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&hist_path) {
                     for line in content.lines() {
                         let trimmed = line.trim();
                         if !trimmed.is_empty() {
                             if let Ok(code) = serde_json::from_str::<String>(trimmed) {
-                                let _ = engine.eval_with_scope::<Dynamic>(&mut state.scope, &code);
                                 state.history.push(code);
                             }
                         }
@@ -505,7 +522,7 @@ impl RhaiKernel {
         }
     }
 
-    fn persist_history_entry(&self, session_id: &str, code: &str) {
+    fn persist_session_state(&self, session_id: &str, code: &str, scope: &Scope) {
         if let Some(path) = self.history_file(session_id) {
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
@@ -519,6 +536,18 @@ impl RhaiKernel {
                 {
                     let _ = writeln!(file, "{json_line}");
                 }
+            }
+        }
+
+        if let Some(scope_path) = self.scope_file(session_id) {
+            let mut map = HashMap::new();
+            for (name, _is_const, val) in scope.iter() {
+                if let Ok(json_val) = rhai::serde::from_dynamic::<Value>(&val) {
+                    map.insert(name.to_string(), json_val);
+                }
+            }
+            if let Ok(json_str) = serde_json::to_string(&map) {
+                let _ = std::fs::write(scope_path, json_str);
             }
         }
     }
@@ -596,8 +625,8 @@ impl KernelPort for RhaiKernel {
         match eval_res {
             Ok(val) => {
                 session_lock.history.push(request.code.clone());
+                self.persist_session_state(&request.session_id, &request.code, &session_lock.scope);
                 drop(session_lock);
-                self.persist_history_entry(&request.session_id, &request.code);
 
                 let result_str = if val.is_unit() {
                     None
@@ -676,6 +705,9 @@ impl KernelPort for RhaiKernel {
         session_lock.scope.clear();
         session_lock.history.clear();
         if let Some(path) = self.history_file(session_id) {
+            let _ = std::fs::remove_file(path);
+        }
+        if let Some(path) = self.scope_file(session_id) {
             let _ = std::fs::remove_file(path);
         }
         Ok(())
