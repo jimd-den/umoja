@@ -1,0 +1,25 @@
+[package]
+name = "umoja-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The umoja binary: composition root and command surface."
+
+default-run = "umoja"
+
+[[bin]]
+name = "umoja"
+path = "src/main.rs"
+
+[dependencies]
+umoja-domain.workspace = true
+umoja-app.workspace = true
+umoja-infra.workspace = true
+chrono.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"

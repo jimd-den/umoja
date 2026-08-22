@@ -1,8 +1,8 @@
 ---
 name: umoja
-description: UMOJA (Umoja Manages Orchestrated Joint Agents) — one Rust binary, `pa`, giving any harness a persistent Python/Node/shell kernel whose variables survive between tool calls (prompt-as-a-variable), a file toolkit that searches and edits without printing files into the conversation, blocking and fire-and-forget subagents (`rlm`), an evidence-backed harness of memories with one-command rollback and an automated review pass, persistent goals with token budgets, heartbeats, cron schedules, agent-to-agent messaging, bounded autonomous mode with quality gates, and context compaction. Use whenever a task involves reading or searching more than one or two files; whenever there is large data you would otherwise print into the conversation (logs, JSON, CSV, query results); whenever state must survive across several tool calls or several sessions; whenever you want to remember something durably and be able to undo it; whenever work should continue on a schedule or until a test passes; or whenever you want to delegate to child agents. Works from Claude Code, opencode, or a plain shell.
+description: UMOJA (Umoja Manages Orchestrated Joint Agents) — one Rust binary, `umoja` (aliased as `pa`), giving any harness a persistent pure Rust embedded kernel whose variables survive between tool calls (prompt-as-a-variable), a file toolkit that searches and edits without printing files into the conversation, blocking and fire-and-forget subagents (`rlm`), an evidence-backed harness of memories with one-command rollback and an automated review pass, persistent goals with token budgets, heartbeats, cron schedules, agent-to-agent messaging, bounded autonomous mode with quality gates, SQLite persistence with FTS5 search, and context compaction. Use whenever a task involves reading or searching more than one or two files; whenever there is large data you would otherwise print into the conversation (logs, JSON, CSV, query results); whenever state must survive across several tool calls or several sessions; whenever you want to remember something durably and be able to undo it; whenever work should continue on a schedule or until a test passes; or whenever you want to delegate to child agents. Works from Claude Code, opencode, Antigravity, or a plain shell.
 license: MIT
-compatibility: Linux or macOS. Rust toolchain to build. python3 (optional, for the Python kernel), node (optional), bash. No network access required.
+compatibility: Linux or macOS. Rust toolchain to build. Pure Rust (Rhai) in-process kernel, embedded SQLite database. No Python or external socket daemon needed. No network access required.
 ---
 
 # UMOJA
@@ -17,7 +17,7 @@ skill is on:
 
 | Instead of | Use |
 |---|---|
-| `Read` a file | `pa kernel exec 'print(head("path"))'`, or `outline`, or `slice_lines` |
+| `Read` a file | `umoja kernel exec 'print(head("path"))'`, or `outline`, or `slice_lines` |
 | `Read` several files | `load("src/**/*.rs")` once, then query |
 | `Grep` / `Glob` | `grep("pattern")` over what you loaded |
 | `Write` a file | `write("path", text)` |
@@ -44,19 +44,18 @@ loaded.
 **Load data into a variable; print only the answer.**
 
 Reading a 200MB log into the conversation costs tokens proportional to its
-size. Loading it into the kernel and printing `len(errors)` costs eleven. The
-kernel is a separate long-lived process, so the variable is still there on your
+size. Loading it into the pure Rust kernel and printing `len(errors)` costs eleven. The
+pure Rust kernel persists variables across tool calls and sessions — so the variable is still there on your
 next tool call — and the one after that.
 
 ```bash
-pa kernel exec 'rows = [json.loads(l) for l in open("server.log")]'   # nothing printed
-pa kernel exec 'len(rows)'                                            # 4213908
-pa kernel exec 'from collections import Counter
-Counter(r["path"] for r in rows if r["status"] >= 500).most_common(3)'
+umoja kernel exec 'let rows = [#{id: 1, status: "error"}, #{id: 2, status: "ok"}];'   # nothing printed
+umoja kernel exec 'rows.len()'                                                         # 2
+umoja kernel exec 'let errors = rows.filter(|r| r.status == "error"); errors.len()'   # 1
 ```
 
-Three calls, one load, and the conversation never sees a single row. Use
-`pa kernel vars` to see what is bound — names, types and sizes, never values.
+Three calls, one load, and the conversation never sees a single raw row. Use
+`umoja kernel vars` to see what is bound — names, types and sizes, never values.
 
 ### The failure mode this skill is designed around
 
@@ -184,22 +183,22 @@ auto-created).
 
 | Need | Command | Detail |
 |---|---|---|
-| Keep data out of context | `pa kernel exec` / `vars` / `reset` | [references/kernel.md](references/kernel.md) |
-| Delegate and wait | `pa agent call` — or `rlm(...)` in the kernel | [references/subagents.md](references/subagents.md) |
-| Delegate and carry on | `pa agent spawn` / `list` / `settle` | [references/subagents.md](references/subagents.md) |
-| Talk between agents | `pa send` / `pa inbox` / `pa roster` | [references/subagents.md](references/subagents.md) |
-| Remember something durably | `pa harness remember` / `list` | [references/harness.md](references/harness.md) |
-| Ask what is worth remembering | `pa refine review [--apply]` | [references/harness.md](references/harness.md) |
-| Undo something you remembered | `pa refine list` / `rollback <id>` | [references/harness.md](references/harness.md) |
-| Reattach to a session | `pa attach [name]` / `pa log -f` | [references/continuity.md](references/continuity.md) |
-| Keep an objective across turns | `pa goal set` / `status` / `complete` | [references/continuity.md](references/continuity.md) |
-| Check in on a timer | `pa heartbeat set` / `add` / `list` | [references/continuity.md](references/continuity.md) |
-| Run a prompt later or on cron | `pa schedule add` / `list` | [references/continuity.md](references/continuity.md) |
-| Work until the tests pass | `pa autonomous on --gate` / `step` | [references/continuity.md](references/continuity.md) |
-| Deliver everything that is due | `pa tick` | [references/continuity.md](references/continuity.md) |
-| Shrink a long session | `pa compact status` / `run` | `pa compact --help` |
-| See installed skills | `pa skills list` / `prompt` | reads Claude, opencode and `.agents` dirs |
-| Get the supplemental prompt | `pa prompt` | harness + skills + live goal, one block |
+| Keep data out of context | `umoja kernel exec` / `vars` / `reset` | [references/kernel.md](references/kernel.md) |
+| Delegate and wait | `umoja agent call` — or `rlm(...)` in the kernel | [references/subagents.md](references/subagents.md) |
+| Delegate and carry on | `umoja agent spawn` / `list` / `settle` | [references/subagents.md](references/subagents.md) |
+| Talk between agents | `umoja send` / `umoja inbox` / `umoja roster` | [references/subagents.md](references/subagents.md) |
+| Remember something durably | `umoja harness remember` / `list` | [references/harness.md](references/harness.md) |
+| Ask what is worth remembering | `umoja refine review [--apply]` | [references/harness.md](references/harness.md) |
+| Undo something you remembered | `umoja refine list` / `rollback <id>` | [references/harness.md](references/harness.md) |
+| Reattach to a session | `umoja attach [name]` / `umoja log -f` | [references/continuity.md](references/continuity.md) |
+| Keep an objective across turns | `umoja goal set` / `status` / `complete` | [references/continuity.md](references/continuity.md) |
+| Check in on a timer | `umoja heartbeat set` / `add` / `list` | [references/continuity.md](references/continuity.md) |
+| Run a prompt later or on cron | `umoja schedule add` / `list` | [references/continuity.md](references/continuity.md) |
+| Work until the tests pass | `umoja autonomous on --gate` / `step` | [references/continuity.md](references/continuity.md) |
+| Deliver everything that is due | `umoja tick` | [references/continuity.md](references/continuity.md) |
+| Shrink a long session | `umoja compact status` / `run` | `umoja compact --help` |
+| See installed skills | `umoja skills list` / `prompt` | reads Claude, opencode, AGY, and `.agents` dirs |
+| Get the supplemental prompt | `umoja prompt` | harness + skills + live goal, one block |
 
 ## Setup
 
@@ -207,7 +206,7 @@ auto-created).
 cd ~/.agents/skills/umoja && ./install.sh
 ```
 
-Builds the release binary and links it into `~/.local/bin/pa`. Run `pa status`
+Builds the release binary and links it into `~/.local/bin/umoja` (and `~/.local/bin/pa`). Run `umoja status`
 to confirm; it reports which harness will run agent turns.
 
 ## Three rules the tool enforces, and why
