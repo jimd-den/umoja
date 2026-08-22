@@ -13,6 +13,7 @@ serde.workspace = true
 serde_json.workspace = true
 rusqlite = { workspace = true, optional = false }
 rhai = { workspace = true, optional = false }
+glob = { workspace = true, optional = false }
 
 [lints.rust]
 unsafe_code = "forbid"

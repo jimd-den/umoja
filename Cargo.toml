@@ -25,6 +25,7 @@ serde_json = "1"
 thiserror = "2"
 rusqlite = { version = "0.32", features = ["bundled", "bundled-full", "chrono"] }
 rhai = { version = "1.19", features = ["serde", "sync"] }
+glob = "0.3"
 
 [profile.release]
 opt-level = 3
