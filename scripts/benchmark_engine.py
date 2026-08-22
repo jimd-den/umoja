@@ -93,7 +93,8 @@ print(len(errors))
     umoja_dur_5, umoja_out_5 = run_proc(["umoja", "kernel", "exec", umoja_code_5])
     print(f"| **5. Warm In-Memory Variable Query** | {py_dur_5:.1f} ms (cold disk reload) | {umoja_dur_5:.1f} ms (warm scope hydration) | **Persistent state across turns** |")
 
-    # 6. AST Code Outline Extraction
+    # 6. AST Code Outline Extraction (Clean session)
+    run_proc(["umoja", "kernel", "reset"])
     py_code_6 = """
 lines = open('crates/umoja-domain/src/lib.rs').readlines()
 outline = [f"{i+1}: {l.strip()}" for i, l in enumerate(lines) if l.strip().startswith(('pub struct', 'pub enum', 'pub trait', 'pub fn', 'fn '))]
@@ -101,9 +102,9 @@ print(len(outline))
 """
     py_dur_6, py_out_6 = run_proc(["python3", "-c", py_code_6])
 
-    umoja_code_6 = 'let o = outline("crates/umoja-domain/src/lib.rs"); print(o);'
+    umoja_code_6 = 'let o = outline("crates/umoja-domain/src/lib.rs"); print(o.len());'
     umoja_dur_6, umoja_out_6 = run_proc(["umoja", "kernel", "exec", umoja_code_6])
-    print(f"| **6. AST Code Outline Extraction** | {py_dur_6:.1f} ms | {umoja_dur_6:.1f} ms | Sub-20ms code structural extraction |")
+    print(f"| **6. AST Code Outline Extraction** | {py_dur_6:.1f} ms | {umoja_dur_6:.1f} ms | **{py_dur_6 / umoja_dur_6:.1f}x faster** |")
 
     if os.path.exists(test_json_path):
         os.remove(test_json_path)
