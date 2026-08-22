@@ -203,6 +203,65 @@ fn register_builtins(engine: &mut Engine) {
             .and_then(|v| serde_json::to_string(&v).ok())
             .unwrap_or_else(|| val.to_string())
     });
+
+    // -------------------------------------------------------------------------
+    // Native fast dataset helpers
+    // -------------------------------------------------------------------------
+    engine.register_fn("count_lines", |files: &mut Array| -> i64 {
+        let mut total = 0i64;
+        for item in files.iter() {
+            if let Some(map) = item.clone().try_cast::<Map>() {
+                if let Some(lines) = map.get("lines") {
+                    if let Ok(l) = lines.as_int() {
+                        total += l;
+                    }
+                }
+            }
+        }
+        total
+    });
+
+    engine.register_fn("total_size", |files: &mut Array| -> i64 {
+        let mut total = 0i64;
+        for item in files.iter() {
+            if let Some(map) = item.clone().try_cast::<Map>() {
+                if let Some(size) = map.get("size") {
+                    if let Ok(s) = size.as_int() {
+                        total += s;
+                    }
+                }
+            }
+        }
+        total
+    });
+
+    engine.register_fn("paths", |files: &mut Array| -> Array {
+        let mut result = Array::new();
+        for item in files.iter() {
+            if let Some(map) = item.clone().try_cast::<Map>() {
+                if let Some(p) = map.get("path") {
+                    result.push(p.clone());
+                }
+            }
+        }
+        result
+    });
+
+    engine.register_fn("filter_by_content", |files: &mut Array, pattern: &str| -> Array {
+        let mut result = Array::new();
+        let pat_lower = pattern.to_lowercase();
+        for item in files.iter() {
+            if let Some(map) = item.clone().try_cast::<Map>() {
+                if let Some(content) = map.get("content") {
+                    let s = content.to_string();
+                    if s.to_lowercase().contains(&pat_lower) {
+                        result.push(item.clone());
+                    }
+                }
+            }
+        }
+        result
+    });
 }
 
 fn head_lines(path: &str, n: usize) -> String {
@@ -384,10 +443,14 @@ fn grep_array(files: &[Dynamic], pattern: &str) -> Array {
 
 impl RhaiKernel {
     pub fn new() -> Self {
+        let max_operations = std::env::var("UMOJA_MAX_OPERATIONS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .or(Some(20_000_000));
         Self {
             paths: None,
             sessions: Arc::new(RwLock::new(HashMap::new())),
-            max_operations: Some(1_000_000),
+            max_operations,
         }
     }
 
@@ -403,6 +466,7 @@ impl RhaiKernel {
 
     fn create_engine(&self) -> Engine {
         let mut engine = Engine::new();
+        engine.set_optimization_level(rhai::OptimizationLevel::Full);
         if let Some(limit) = self.max_operations {
             engine.set_max_operations(limit);
         }
