@@ -12,6 +12,12 @@
 
 ## 🎯 The Agent Navigation Playbook (Best Practice Workflows)
 
+0. **Hypothesis-Driven TDD (Red-Green-Refactor)**:
+   - **Formulate Hypothesis**: State expected invariant before modifying code.
+   - **RED**: Write failing unit test first, verify failure: `edit("path/to/test.rs", ...); sh("cargo test target_test");`
+   - **GREEN**: Slice implementation range, apply minimal fix, verify pass: `slice_lines(...); edit(...); sh("cargo test target_test");`
+   - **REFACTOR**: Clean architecture pass, run full workspace suite, persist memory: `sh("cargo test --workspace"); umoja harness remember ...`
+
 1. **Targeted Code Navigation (Climb the Ladder)**:
    - **Step 1 (Find)**: `let hits = grep("fn target_func", "crates/**/*.rs");`
    - **Step 2 (Shape)**: `print(outline("path/to/file.rs"));`

@@ -40,9 +40,47 @@ compatibility: Linux or macOS. Rust toolchain to build. Pure Rust (Rhai) in-proc
 
 ## 🎯 The Agent Navigation Playbook (Best Practice Workflows)
 
-When interacting with a codebase or large datasets, agents must follow these 4 standard playbooks:
+### 🔴🟢 Playbook 0: Hypothesis-Driven TDD (Red-Green-Refactor)
+Every functional change, bug fix, or new feature should follow explicit hypothesis-driven TDD:
 
-### Playbook 1: The 4-Step Targeted Code Navigation & Edit
+```bash
+# 1. State the Hypothesis & Set Objective
+# Hypothesis: "Adding unique_by to dataset builtins will deduplicate array maps by field key."
+umoja goal set "TDD: Implement unique_by dataset builtin"
+
+# 2. RED PHASE: Write the failing unit test first
+umoja kernel exec 'print(slice_lines("crates/umoja-infra/src/kernel/builtins/dataset.rs", 400, 430));'
+umoja kernel exec 'edit("crates/umoja-infra/src/kernel/builtins/dataset.rs", "// test placeholder", "
+    #[test]
+    fn test_unique_by_deduplication() {
+        let mut engine = Engine::new();
+        register_dataset_builtins(&mut engine);
+        let res: bool = engine.eval(\"let items = [#{id: 1}, #{id: 1}, #{id: 2}]; items.unique_by(\\\"id\\\").len() == 2\").unwrap();
+        assert!(res);
+    }
+");'
+
+# Run test to confirm RED (fails for the expected reason: function not found)
+umoja kernel exec 'print(sh("cargo test test_unique_by_deduplication"));'
+
+# 3. GREEN PHASE: Write minimal implementation to satisfy test
+umoja kernel exec 'edit("crates/umoja-infra/src/kernel/builtins/dataset.rs", "// register hooks", "
+    engine.register_fn(\"unique_by\", |arr: &mut Array, field: &str| -> Array {
+        unique_field(arr, field)
+    });
+");'
+
+# Run test to confirm GREEN (0 failures)
+umoja kernel exec 'print(sh("cargo test test_unique_by_deduplication"));'
+
+# 4. REFACTOR & VERIFY: Ensure Clean Architecture boundaries and full suite passes
+umoja kernel exec 'print(sh("cargo test --workspace"));'
+umoja harness remember tdd "Verified unique_by deduplication invariant with 100% test coverage"
+```
+
+---
+
+### Playbook 1: The 4-Step Targeted Code Navigation & Slicing
 Never dump an entire file into conversation context. Follow this 4-step ladder:
 
 ```bash
@@ -56,15 +94,13 @@ umoja kernel exec 'print(outline("crates/umoja-infra/src/runner.rs"));'
 umoja kernel exec 'print(slice_lines("crates/umoja-infra/src/runner.rs", 120, 160));'
 
 # Step 4: PRECISE IN-PLACE EDIT & TEST
-umoja kernel exec 'edit("crates/umoja-infra/src/runner.rs", "let old_logic = true;", "let old_logic = false;");'
+umoja kernel exec 'edit("crates/umoja-infra/src/runner.rs", "let old_val = true;", "let old_val = false;");'
 umoja kernel exec 'print(sh("cargo test -p umoja-infra"));'
 ```
 
 ---
 
 ### Playbook 2: Multi-File Batch Audit & Refactoring
-Perform multi-file scans and mass edits in-memory without polluting context:
-
 ```bash
 # Ingest all matching files into memory
 umoja kernel exec 'let files = load("crates/**/*.rs");'
@@ -80,8 +116,6 @@ umoja kernel exec 'print(sh("cargo check --workspace"));'
 ---
 
 ### Playbook 3: Large Dataset & Log Analysis
-Process 50,000+ log lines or JSON records with zero token overhead:
-
 ```bash
 # Load dataset into memory
 umoja kernel exec 'let logs = load("logs/production.json");'
@@ -100,8 +134,6 @@ umoja kernel exec 'let samples = errors.take_n(3); print(to_json(samples));'
 ---
 
 ### Playbook 4: Persistent Multi-Turn Tasks & Memory
-Keep long-running objectives and architectural memories aligned across turns:
-
 ```bash
 # 1. Set the active goal
 umoja goal set "Migrate storage layer to SQLite WAL mode and verify FTS5 queries"
