@@ -10,34 +10,36 @@
 - **Lambdas**: `|x| x.score > 80`
 - **Loops/If**: `if cond { ... }`, `for item in list { ... }`, `for i in range(0, 10) { ... }`
 
+## 🎯 The Agent Navigation Playbook (Best Practice Workflows)
+
+1. **Targeted Code Navigation (Climb the Ladder)**:
+   - **Step 1 (Find)**: `let hits = grep("fn target_func", "crates/**/*.rs");`
+   - **Step 2 (Shape)**: `print(outline("path/to/file.rs"));`
+   - **Step 3 (Line Range)**: `print(slice_lines("path/to/file.rs", 120, 155));` (read only the target range!)
+   - **Step 4 (Edit & Verify)**: `edit("path/to/file.rs", "old", "new"); sh("cargo test");`
+
+2. **Multi-File Batch Refactoring**:
+   - `let files = load("crates/**/*.rs");`
+   - `let matches = files.filter_by_content("target_pattern");`
+   - `for f in matches { edit(f.path, "old", "new"); }`
+
+3. **Data Aggregations & Grouping**:
+   - `arr.sum_by("field")`, `arr.avg_by("field")`, `arr.group_by("field")`, `arr.count_by("field")`, `arr.sort_by("field")`, `arr.filter_eq("field", val)`, `arr.pluck("field")`.
+
+4. **Episodic Memory & Long-Term Learning**:
+   - `umoja harness remember <scope> "<fact>"` to persist architecture across turns.
+   - `umoja harness search "<query>"` with FTS5 search to recall memories.
+   - `umoja refine review` and `umoja refine rollback <id>` for memory rollbacks.
+
+5. **Goals & Subagent Delegation**:
+   - `umoja goal set "<objective>"` and `umoja goal status` for multi-turn objectives.
+   - `umoja agent call --role "..." --prompt "..."` for isolated recursive subagent tasks.
+   - `umoja heartbeat set ...`, `umoja schedule ...`, and `umoja tick` for background scheduling.
+   - `umoja send <recipient> "..."` and `umoja inbox` for inter-agent communication.
+   - `umoja compact` for context compaction.
+
 ## Mandatory Tooling & Feature Discipline
 
 When inspecting, exploring, reading, searching, or editing code and data files, the agent **MUST ALWAYS** use `umoja` via `run_command`:
-
-1. **Reading & Exploring Code / Files**:
-   - DO NOT call native `view_file`, `read_file`, or dump whole files into context.
-   - Use `umoja kernel exec 'print(head("path/to/file"))'` or `slice_lines("path/to/file", start, end)` or `outline("path/to/file")`.
-   - For multi-file analysis: `umoja kernel exec 'let files = load("crates/**/*.rs");'` then query `files` using native vector operations (`files.count_lines()`, `files.filter_by_content(...)`).
-
-2. **Searching Code**:
-   - DO NOT use native `grep_search` or `find_by_name` across large trees.
-   - Use `umoja kernel exec 'let hits = grep("pattern", "crates/**/*.rs"); print(hits.len());'`.
-
-3. **Editing & Modifying Files**:
-   - Use `umoja kernel exec 'edit("path/to/file", "old_text", "new_text")'` or `write("path/to/file", content)`.
-
-4. **Data Aggregations & Grouping**:
-   - Use native Rhai vector operations: `arr.sum_by("field")`, `arr.avg_by("field")`, `arr.group_by("field")`, `arr.count_by("field")`, `arr.sort_by("field")`, `arr.filter_eq("field", val)`, `arr.pluck("field")`.
-
-5. **Episodic Memory & Long-Term Learning**:
-   - Use `umoja harness remember <scope> "<fact>"` to persist architecture and requirements across turns.
-   - Use `umoja harness search "<query>"` with FTS5 search to recall memories.
-   - Use `umoja refine review` and `umoja refine rollback <id>` for memory rollbacks.
-
-6. **Goals & Subagent Delegation**:
-   - Use `umoja goal set "<objective>"` and `umoja goal status` for multi-turn objectives.
-   - Use `umoja agent call --role "..." --prompt "..."` for isolated recursive subagent tasks.
-   - Use `umoja heartbeat set ...`, `umoja schedule ...`, and `umoja tick` for background scheduling.
-   - Use `umoja send <recipient> "..."` and `umoja inbox` for inter-agent communication.
-   - Use `umoja compact` for context compaction.
-
+- DO NOT call native `view_file`, `read_file`, `grep_search`, `find_by_name`, `write_to_file`, or `replace_file_content`.
+- Use `umoja kernel exec` with Rhai functions.

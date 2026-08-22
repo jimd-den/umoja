@@ -38,6 +38,86 @@ compatibility: Linux or macOS. Rust toolchain to build. Pure Rust (Rhai) in-proc
 
 ---
 
+## 🎯 The Agent Navigation Playbook (Best Practice Workflows)
+
+When interacting with a codebase or large datasets, agents must follow these 4 standard playbooks:
+
+### Playbook 1: The 4-Step Targeted Code Navigation & Edit
+Never dump an entire file into conversation context. Follow this 4-step ladder:
+
+```bash
+# Step 1: FIND the symbol or pattern
+umoja kernel exec 'let hits = grep("fn execute_task", "crates/**/*.rs"); for h in hits { print(`${h.path}:${h.line} -> ${h.content}`); }'
+
+# Step 2: GET THE SHAPE & LINE NUMBERS of the file
+umoja kernel exec 'print(outline("crates/umoja-infra/src/runner.rs"));'
+
+# Step 3: SLICE ONLY THE TARGET LINE RANGE (e.g. lines 120 to 160)
+umoja kernel exec 'print(slice_lines("crates/umoja-infra/src/runner.rs", 120, 160));'
+
+# Step 4: PRECISE IN-PLACE EDIT & TEST
+umoja kernel exec 'edit("crates/umoja-infra/src/runner.rs", "let old_logic = true;", "let old_logic = false;");'
+umoja kernel exec 'print(sh("cargo test -p umoja-infra"));'
+```
+
+---
+
+### Playbook 2: Multi-File Batch Audit & Refactoring
+Perform multi-file scans and mass edits in-memory without polluting context:
+
+```bash
+# Ingest all matching files into memory
+umoja kernel exec 'let files = load("crates/**/*.rs");'
+
+# Find which files contain deprecated APIs
+umoja kernel exec 'let targets = files.filter_by_content("deprecated_api()"); print("Affected files: " + targets.len());'
+
+# Apply batch replacements and verify
+umoja kernel exec 'for f in targets { edit(f.path, "deprecated_api()", "new_v2_api()"); }'
+umoja kernel exec 'print(sh("cargo check --workspace"));'
+```
+
+---
+
+### Playbook 3: Large Dataset & Log Analysis
+Process 50,000+ log lines or JSON records with zero token overhead:
+
+```bash
+# Load dataset into memory
+umoja kernel exec 'let logs = load("logs/production.json");'
+
+# Filter errors and aggregate frequency breakdown
+umoja kernel exec '
+let errors = logs.filter_eq("level", "ERROR");
+let histogram = errors.count_by("error_code");
+print("Error breakdown: " + to_json(histogram));
+'
+
+# Inspect first 3 failing samples
+umoja kernel exec 'let samples = errors.take_n(3); print(to_json(samples));'
+```
+
+---
+
+### Playbook 4: Persistent Multi-Turn Tasks & Memory
+Keep long-running objectives and architectural memories aligned across turns:
+
+```bash
+# 1. Set the active goal
+umoja goal set "Migrate storage layer to SQLite WAL mode and verify FTS5 queries"
+
+# 2. Persist key decisions into durable episodic memory
+umoja harness remember architecture "SQLite WAL mode enabled; FTS5 virtual tables index all transcripts"
+
+# 3. Check goal status anytime
+umoja goal status
+
+# 4. Search memory in future sessions
+umoja harness search "SQLite WAL"
+```
+
+---
+
 ## 🛑 MANDATORY RULE: The Kernel Is How You Touch Files
 
 This rule is **strictly mandatory and enforced** across all agent sessions:
@@ -53,21 +133,6 @@ This rule is **strictly mandatory and enforced** across all agent sessions:
 
 **Why this rule is exclusive:**
 Reading files directly with native view/read tools dumps raw content into conversation context permanently, causing context bloat and token exhaustion. `umoja` loads files into an in-process pure Rust Rhai kernel, keeping raw tokens out of context, and returns only the precise answers, slices, or summaries needed.
-
----
-
-## ⚡ Core Philosophy: Load Into Variables, Print Only Answers
-
-```bash
-# 1. Load entire dataset or codebase into persistent kernel memory (prints nothing)
-umoja kernel exec 'let files = load("crates/**/*.rs");'
-
-# 2. Inspect shape and metrics in native Rust
-umoja kernel exec 'print("Files: " + files.len() + ", Total lines: " + files.count_lines());'
-
-# 3. Query or filter in memory across subsequent tool turns (variable `files` remains bound)
-umoja kernel exec 'let tests = files.filter_by_content("test"); print("Files with tests: " + tests.len());'
-```
 
 ---
 
@@ -107,76 +172,41 @@ umoja kernel exec 'let tests = files.filter_by_content("test"); print("Files wit
 ## 🧠 Complete UMOJA Subsystem Guide
 
 ### 1. Continual Learning & Memory (`harness` & `refine`)
-Persist important facts, project conventions, and architecture decisions across turns and sessions:
 ```bash
-# Remember a durable architectural fact
 umoja harness remember architecture "Uses Clean Architecture with domain, app, infra, and cli crates"
-
-# Search memory using SQLite FTS5 full-text search
 umoja harness search "Clean Architecture"
-
-# List all stored memories
 umoja harness list
-
-# Review or rollback a bad memory revision
 umoja refine review
 umoja refine rollback <id>
 ```
 
 ### 2. Persistent Objectives & Goals (`goal`)
-Track multi-turn objectives so context is never lost:
 ```bash
-# Set active goal
 umoja goal set "Refactor kernel builtins into clean submodules and verify benchmarks"
-
-# Check goal progress
 umoja goal status
 umoja goal list
 ```
 
 ### 3. Recursive Delegation & Subagents (`agent`)
-Spawn isolated child agents for deep sub-tasks:
 ```bash
-# Run a subagent for research or deep exploration
 umoja agent call --role "Codebase Researcher" --prompt "Explore all SQL stores in crates/umoja-infra"
 ```
 
 ### 4. Background Heartbeats, Timers & Scheduling (`heartbeat`, `schedule`, `tick`)
 ```bash
-# Set recurring periodic instruction
 umoja heartbeat set 30m "Check git status and compile tests"
-
-# Set one-time delayed reminder
 umoja schedule 10m "Verify benchmark results"
-
-# Deliver due scheduled tasks
 umoja tick
 ```
 
 ### 5. Multi-Agent Messaging Bus (`send`, `inbox`, `roster`)
 ```bash
-# List all active sessions
 umoja roster
-
-# Send a structured message to another session
 umoja send worker-1 "Dataset loaded in kernel variable 'users', proceed with aggregation"
-
-# Check inbox for incoming messages
 umoja inbox
 ```
 
 ### 6. Context Compaction (`compact`)
 ```bash
-# Condense long conversation logs and extract instruction outlines
 umoja compact
 ```
-
----
-
-## 🧗 Climb the Ladder Before You Print
-
-1. **`grep(...)`** — You know what you are looking for.
-2. **`outline(path)`** — You need the structural shape without full bodies.
-3. **`slice_lines(path, start, end)`** — `outline` told you exactly which line range to inspect.
-4. **`head(path, 20)`** — A quick peek near the top is sufficient.
-5. **Full print** — The last resort, only for small files when strictly necessary.
