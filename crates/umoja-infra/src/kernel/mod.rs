@@ -5,6 +5,7 @@
 //! [`shell::ShellKernel`] persists working directory and exported environment variables.
 //! [`socket::SocketKernel`] optionally supports socket interpreters.
 
+pub mod builtins;
 pub mod rhai_kernel;
 pub mod shell;
 pub mod socket;
