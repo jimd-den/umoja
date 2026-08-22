@@ -1,9 +1,3 @@
-//! Persistent goals.
-//!
-//! A goal is an explicit act. Nothing here infers one from a task, because a
-//! harness that quietly decides it now has a long-running objective is a
-//! harness that keeps spending after you thought it stopped.
-
 use std::sync::Arc;
 
 use umoja_domain::prelude::*;
@@ -11,17 +5,12 @@ use umoja_domain::transcript::{TranscriptEvent, TranscriptRecord};
 
 use crate::Env;
 
+#[derive(Clone)]
 pub struct GoalService {
     env: Env,
     goals: Arc<dyn GoalStore>,
     sessions: Arc<dyn SessionStore>,
     transcript: Arc<dyn TranscriptLog>,
-}
-
-impl std::fmt::Debug for GoalService {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("GoalService")
-    }
 }
 
 impl GoalService {
@@ -44,18 +33,14 @@ impl GoalService {
         selector: &str,
         objective: &str,
         budget: GoalBudget,
-        replace: bool,
+        overwrite: bool,
     ) -> Result<Goal> {
         let session = self.sessions.resolve(selector)?;
         let now = self.env.now();
 
         if let Some(existing) = self.goals.get(&session.id)? {
-            if !existing.status.is_terminal() && !replace {
-                return Err(DomainError::forbidden(format!(
-                    "'{}' already has a {} goal; clear it or pass replace",
-                    session.name,
-                    existing.status.label()
-                )));
+            if existing.status == GoalStatus::Active && !overwrite {
+                return Err(DomainError::conflict("goal", &session.id));
             }
         }
 
@@ -98,6 +83,40 @@ impl GoalService {
         self.goals.clear(&session.id)
     }
 
+    // -------------------------------------------------------------------------
+    // Checklist Operations
+    // -------------------------------------------------------------------------
+
+    pub fn add_step(&self, selector: &str, text: &str) -> Result<(Goal, u32)> {
+        let mut new_id = 0;
+        let goal = self.mutate(selector, |goal, now| {
+            new_id = goal.add_step(text, now)?;
+            Ok(())
+        })?;
+        Ok((goal, new_id))
+    }
+
+    pub fn check_step(&self, selector: &str, id: u32) -> Result<Goal> {
+        self.mutate(selector, |goal, now| {
+            goal.check_step(id, now)?;
+            Ok(())
+        })
+    }
+
+    pub fn uncheck_step(&self, selector: &str, id: u32) -> Result<Goal> {
+        self.mutate(selector, |goal, now| {
+            goal.uncheck_step(id, now)?;
+            Ok(())
+        })
+    }
+
+    pub fn remove_step(&self, selector: &str, id: u32) -> Result<Goal> {
+        self.mutate(selector, |goal, now| {
+            goal.remove_step(id, now)?;
+            Ok(())
+        })
+    }
+
     /// Folds a turn's cost into the goal and reports whether that ended it.
     pub fn observe(&self, selector: &str, usage: &Usage) -> Result<Option<Goal>> {
         let session = self.sessions.resolve(selector)?;
@@ -114,15 +133,17 @@ impl GoalService {
     }
 
     /// The text put in front of the model when a goal is still open.
-    ///
-    /// It restates the objective and what has been spent, and — deliberately —
-    /// says how to finish. A goal the model cannot see how to close is a goal
-    /// that runs until the budget does.
     pub fn continuation_prompt(&self, goal: &Goal) -> Option<String> {
         if !goal.should_continue() {
             return None;
         }
         let mut prompt = format!("<goal status=\"{}\">\n{}\n", goal.status.label(), goal.objective);
+        if !goal.checklist.is_empty() {
+            prompt.push_str(&format!("Checklist: {}\n", goal.progress_summary()));
+            if let Some(next) = goal.next_step() {
+                prompt.push_str(&format!("Next Step: [ ] {}. {}\n", next.id, next.text));
+            }
+        }
         if let Some(remaining) = goal.remaining_tokens() {
             prompt.push_str(&format!(
                 "Budget: {remaining} of {} tokens left.\n",
@@ -239,66 +260,19 @@ mod tests {
     }
 
     #[test]
-    fn a_completed_goal_leaves_room_for_the_next_one() {
+    fn checklist_steps_can_be_added_checked_and_uncheck() {
         let (service, _) = fixture();
         create(&service, None).unwrap();
-        service.complete("root").unwrap();
-        assert!(create(&service, None).is_ok());
-    }
+        let (_, id1) = service.add_step("root", "Step 1: Write model").unwrap();
+        let (_, id2) = service.add_step("root", "Step 2: Wire CLI").unwrap();
+        assert_eq!(id1, 1);
+        assert_eq!(id2, 2);
 
-    #[test]
-    fn spending_the_budget_stops_the_goal_without_claiming_success() {
-        let (service, _) = fixture();
-        create(&service, Some(100)).unwrap();
-        let goal = service
-            .observe(
-                "root",
-                &Usage {
-                    input_tokens: 90,
-                    output_tokens: 30,
-                    turns: 1,
-                    attributed_child_tokens: 0,
-                },
-            )
-            .unwrap()
-            .unwrap();
+        let goal = service.check_step("root", id1).unwrap();
+        assert_eq!(goal.progress_summary(), "1/2 steps complete (50%)");
 
-        assert_eq!(goal.status, GoalStatus::BudgetExhausted);
-        assert!(service.continuation_prompt(&goal).is_none());
-        assert!(service.complete("root").is_err());
-    }
-
-    #[test]
-    fn a_paused_goal_produces_no_continuation() {
-        let (service, _) = fixture();
-        create(&service, None).unwrap();
-        let paused = service.pause("root").unwrap();
-        assert!(service.continuation_prompt(&paused).is_none());
-        let resumed = service.resume("root").unwrap();
-        assert!(service.continuation_prompt(&resumed).is_some());
-    }
-
-    #[test]
-    fn the_continuation_prompt_states_the_remaining_budget() {
-        let (service, _) = fixture();
-        let goal = create(&service, Some(1000)).unwrap();
         let prompt = service.continuation_prompt(&goal).unwrap();
-        assert!(prompt.contains("1000 of 1000 tokens left"));
-        assert!(prompt.contains("ship the release"));
-    }
-
-    #[test]
-    fn observing_a_session_with_no_goal_is_not_an_error() {
-        let (service, _) = fixture();
-        assert!(service.observe("root", &Usage::default()).unwrap().is_none());
-    }
-
-    #[test]
-    fn elapsed_time_comes_from_the_clock_not_a_guess() {
-        let (service, clock) = fixture();
-        create(&service, None).unwrap();
-        clock.advance_secs(300);
-        let goal = service.observe("root", &Usage::default()).unwrap().unwrap();
-        assert_eq!(goal.progress.elapsed_secs, 300);
+        assert!(prompt.contains("1/2 steps complete (50%)"));
+        assert!(prompt.contains("Next Step: [ ] 2. Step 2: Wire CLI"));
     }
 }

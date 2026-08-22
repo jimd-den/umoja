@@ -375,6 +375,24 @@ pub enum GoalCommand {
     /// The only way to mark a goal successful.
     Complete,
     Clear,
+    /// Add a checklist step to the active goal.
+    Add {
+        step: String,
+    },
+    /// Mark a checklist step as completed.
+    Check {
+        id: u32,
+    },
+    /// Unmark a checklist step.
+    Uncheck {
+        id: u32,
+    },
+    /// Remove a checklist step.
+    Remove {
+        id: u32,
+    },
+    /// Display the formatted checklist.
+    Checklist,
 }
 
 #[derive(Debug, Subcommand)]

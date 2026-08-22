@@ -50,13 +50,20 @@ pub fn goal(app: &App, command: &GoalCommand) -> Result<Output> {
             Some(goal) => {
                 let mut lines = vec![
                     format!("{} [{}]", goal.objective, goal.status.label()),
-                    format!(
-                        "spent {} tokens over {} and {} continuations",
-                        goal.progress.tokens_used,
-                        duration(goal.progress.elapsed_secs as i64),
-                        goal.progress.continuations
-                    ),
                 ];
+                if !goal.checklist.is_empty() {
+                    lines.push(format!("checklist: {}", goal.progress_summary()));
+                    for item in &goal.checklist {
+                        let mark = if item.completed { "[x]" } else { "[ ]" };
+                        lines.push(format!("  {} {}. {}", mark, item.id, item.text));
+                    }
+                }
+                lines.push(format!(
+                    "spent {} tokens over {} and {} continuations",
+                    goal.progress.tokens_used,
+                    duration(goal.progress.elapsed_secs as i64),
+                    goal.progress.continuations
+                ));
                 if let Some(remaining) = goal.remaining_tokens() {
                     lines.push(format!("{remaining} tokens of budget left"));
                 }
@@ -64,6 +71,54 @@ pub fn goal(app: &App, command: &GoalCommand) -> Result<Output> {
                     lines.push(note.clone());
                 }
                 Ok(Output::new(lines.join("\n"), describe_goal(&goal)))
+            }
+            None => Ok(Output::new("no goal", json!({ "goal": null }))),
+        },
+
+        GoalCommand::Add { step } => {
+            let (goal, id) = app.goals.add_step(&session.id, step)?;
+            Ok(Output::new(
+                format!("added step {id}: {step}\n{}", goal.progress_summary()),
+                describe_goal(&goal),
+            ))
+        }
+
+        GoalCommand::Check { id } => {
+            let goal = app.goals.check_step(&session.id, *id)?;
+            Ok(Output::new(
+                format!("checked step {id}\n{}", goal.progress_summary()),
+                describe_goal(&goal),
+            ))
+        }
+
+        GoalCommand::Uncheck { id } => {
+            let goal = app.goals.uncheck_step(&session.id, *id)?;
+            Ok(Output::new(
+                format!("unchecked step {id}\n{}", goal.progress_summary()),
+                describe_goal(&goal),
+            ))
+        }
+
+        GoalCommand::Remove { id } => {
+            let goal = app.goals.remove_step(&session.id, *id)?;
+            Ok(Output::new(
+                format!("removed step {id}\n{}", goal.progress_summary()),
+                describe_goal(&goal),
+            ))
+        }
+
+        GoalCommand::Checklist => match app.goals.get(&session.id)? {
+            Some(goal) => {
+                if goal.checklist.is_empty() {
+                    Ok(Output::message("no checklist steps defined for active goal"))
+                } else {
+                    let mut lines = vec![format!("{} ({})", goal.objective, goal.progress_summary())];
+                    for item in &goal.checklist {
+                        let mark = if item.completed { "[x]" } else { "[ ]" };
+                        lines.push(format!("{} {}. {}", mark, item.id, item.text));
+                    }
+                    Ok(Output::new(lines.join("\n"), describe_goal(&goal)))
+                }
             }
             None => Ok(Output::new("no goal", json!({ "goal": null }))),
         },
@@ -91,6 +146,7 @@ fn describe_goal(goal: &Goal) -> serde_json::Value {
     json!({
         "objective": goal.objective,
         "status": goal.status.label(),
+        "checklist": goal.checklist,
         "tokens_used": goal.progress.tokens_used,
         "continuations": goal.progress.continuations,
         "elapsed_secs": goal.progress.elapsed_secs,
@@ -99,7 +155,6 @@ fn describe_goal(goal: &Goal) -> serde_json::Value {
         "note": goal.note,
     })
 }
-
 pub fn heartbeat(app: &App, command: &HeartbeatCommand) -> Result<Output> {
     let session = app.session()?;
 

@@ -1,6 +1,6 @@
 ---
 name: umoja
-description: UMOJA (Umoja Manages Orchestrated Joint Agents) — MANDATORY FILE & KERNEL ENGINE FOR ANTIGRAVITY (AGY) & CLAUDE CODE. Always activate this skill for ANY task involving reading, inspecting, searching, editing, or creating files, running tests, exploring codebases, or handling multi-turn context. The agent MUST NOT use native view_file, grep_search, or edit tools to browse or edit code; instead, use `umoja kernel exec` (with Rhai functions `head`, `outline`, `slice_lines`, `load`, `grep`, `edit`, `replace_lines`, `replace_fn`, `write_b64`, `sum_by`, `group_by`, `count_by`, `sort_by`, `filter_eq`, `pluck`), `umoja agent call` (subagents/RLM), `umoja harness remember/search/rollback`, `umoja goal set/status`, `umoja heartbeat/schedule/tick`, `umoja send/inbox`, `umoja compact`, and SQLite memory with FTS5 search.
+description: UMOJA (Umoja Manages Orchestrated Joint Agents) — MANDATORY FILE & KERNEL ENGINE FOR ANTIGRAVITY (AGY) & CLAUDE CODE. Always activate this skill for ANY task involving reading, inspecting, searching, editing, or creating files, running tests, exploring codebases, or handling multi-turn context. The agent MUST NOT use native view_file, grep_search, or edit tools to browse or edit code; instead, use `umoja kernel exec` (with Rhai functions `head`, `outline`, `slice_lines`, `load`, `grep`, `edit`, `replace_lines`, `replace_fn`, `write_b64`, `sum_by`, `group_by`, `count_by`, `sort_by`, `filter_eq`, `pluck`), `umoja agent call` (subagents/RLM), `umoja harness remember/search/rollback`, `umoja goal set/add/check/status`, `umoja heartbeat/schedule/tick`, `umoja send/inbox`, `umoja compact`, and SQLite memory with FTS5 search.
 license: MIT
 compatibility: Linux or macOS. Rust toolchain to build. Pure Rust (Rhai) in-process kernel, embedded SQLite database. No Python or external socket daemon needed. No network access required.
 ---
@@ -8,6 +8,45 @@ compatibility: Linux or macOS. Rust toolchain to build. Pure Rust (Rhai) in-proc
 # UMOJA
 
 **U**moja **M**anages **O**rchestrated **J**oint **A**gents. *Umoja* is Swahili for "unity" — one persistent namespace, many agents, pulling in one direction.
+
+---
+
+## 📋 First-Class Token-Saving Checklist System
+
+UMOJA includes a native, first-class checklist system built into `umoja goal`. Instead of wasting hundreds of tokens repeating checklists in chat transcripts, steps are stored in SQLite and injected as a compact 1-line progress indicator.
+
+### CLI Usage:
+```bash
+# 1. Set the overarching goal
+umoja goal set "Refactor File System Module"
+
+# 2. Add individual steps
+umoja goal add "Implement base64 streaming codec"
+umoja goal add "Add line-range replacement (replace_lines)"
+umoja goal add "Add symbol-level replacement (replace_fn)"
+umoja goal add "Run full workspace test suite"
+
+# 3. Check off completed steps
+umoja goal check 1
+umoja goal check 2
+
+# 4. View status & visual progress
+umoja goal status
+# Output:
+# Refactor File System Module [active]
+# checklist: 2/4 steps complete (50%)
+#   [x] 1. Implement base64 streaming codec
+#   [x] 2. Add line-range replacement (replace_lines)
+#   [ ] 3. Add symbol-level replacement (replace_fn)
+#   [ ] 4. Run full workspace test suite
+
+# 5. Output pure markdown checklist
+umoja goal checklist
+
+# 6. Uncheck or remove steps if needed
+umoja goal uncheck 2
+umoja goal remove 4
+```
 
 ---
 
@@ -93,6 +132,9 @@ umoja kernel exec 'replace_lines_b64("path/to/file", 10, 20, "bmV3IGNvZGU=");'
 ```bash
 # 1. State Hypothesis & Set Objective
 umoja goal set "TDD: Implement unique_by dataset builtin"
+umoja goal add "Write failing test"
+umoja goal add "Apply minimal implementation"
+umoja goal add "Refactor and verify workspace"
 
 # 2. RED: Write failing test first
 umoja kernel exec 'replace_lines("crates/umoja-infra/src/kernel/builtins/dataset.rs", 400, 405, r#"
@@ -104,34 +146,20 @@ umoja kernel exec 'replace_lines("crates/umoja-infra/src/kernel/builtins/dataset
     }
 "#);'
 umoja kernel exec 'print(sh("cargo test test_unique_by"));'
+umoja goal check 1
 
 # 3. GREEN: Minimal fix
 umoja kernel exec 'insert_after("crates/umoja-infra/src/kernel/builtins/dataset.rs", "register_dataset_builtins", r#"
     engine.register_fn("unique_by", |arr: &mut Array, f: &str| -> Array { unique_field(arr, f) });
 "#);'
 umoja kernel exec 'print(sh("cargo test test_unique_by"));'
+umoja goal check 2
 
 # 4. REFACTOR & VERIFY
 umoja kernel exec 'print(sh("cargo test --workspace"));'
+umoja goal check 3
+umoja goal complete
 umoja harness remember tdd "Verified unique_by invariant"
-```
-
----
-
-### Playbook 1: The 4-Step Targeted Code Navigation & Slicing
-```bash
-# Step 1: FIND symbol
-umoja kernel exec 'let hits = grep("fn execute_task", "crates/**/*.rs"); for h in hits { print(`${h.path}:${h.line} -> ${h.content}`); }'
-
-# Step 2: OUTLINE shape
-umoja kernel exec 'print(outline("crates/umoja-infra/src/runner.rs"));'
-
-# Step 3: SLICE target range
-umoja kernel exec 'print(slice_lines("crates/umoja-infra/src/runner.rs", 120, 160));'
-
-# Step 4: PRECISE LINE-RANGE EDIT
-umoja kernel exec 'replace_lines("crates/umoja-infra/src/runner.rs", 130, 145, new_body);'
-umoja kernel exec 'print(sh("cargo test -p umoja-infra"));'
 ```
 
 ---
