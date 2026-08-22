@@ -11,6 +11,33 @@ compatibility: Linux or macOS. Rust toolchain to build. Pure Rust (Rhai) in-proc
 
 ---
 
+## 📖 What is Rhai? (Quick Syntax Guide for AI Agents)
+
+**Rhai** is an embedded scripting language for Rust with a clean syntax combining **JavaScript** and **Rust**.
+
+### Rhai Syntax Rules:
+1. **Variables**:
+   - Always declare with `let` or `const`: `let count = 0; const MAX = 100;`
+2. **Strings**:
+   - Use double quotes `"hello"` or backticks `` `result: ${x}` ``.
+   - **Important**: Single quotes `'c'` are for single `char` characters only. Use `"string"` for text.
+3. **Object Maps**:
+   - Maps use the leading hash syntax: `#{ name: "Alice", score: 95, active: true }`
+   - Access fields with dot notation or index: `user.name` or `user["name"]`
+4. **Arrays**:
+   - `let list = [1, 2, 3];`
+   - Methods: `list.push(4)`, `list.len()`, `list[0]`, `list.pop()`
+5. **Closures / Lambdas**:
+   - Rust-style pipes: `|x| x.score > 80`
+   - Example: `let passing = users.filter(|u| u.score >= 70);`
+6. **Control Flow**:
+   - `if x > 0 { ... } else { ... }`
+   - `for item in list { ... }`
+   - `for i in range(0, 10) { ... }`
+   - `while count < 5 { ... }`
+
+---
+
 ## 🛑 MANDATORY RULE: The Kernel Is How You Touch Files
 
 This rule is **strictly mandatory and enforced** across all agent sessions:

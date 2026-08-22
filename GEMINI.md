@@ -1,5 +1,15 @@
 # Antigravity (AGY) & UMOJA Rules
 
+## What is Rhai? (Quick Syntax Guide for AI Agents)
+
+**Rhai** is an embedded scripting language for Rust with syntax combining JavaScript and Rust:
+- **Variables**: `let x = 10;`, `const PI = 3.14;`
+- **Strings**: Double quotes `"text"` or template literals `` `val: ${x}` `` (Single quotes `'c'` are characters only).
+- **Maps/Objects**: `#{ name: "Alice", score: 95 }`
+- **Arrays**: `let list = [1, 2, 3]; list.push(4); list.len()`
+- **Lambdas**: `|x| x.score > 80`
+- **Loops/If**: `if cond { ... }`, `for item in list { ... }`, `for i in range(0, 10) { ... }`
+
 ## Mandatory Tooling & Feature Discipline
 
 When inspecting, exploring, reading, searching, or editing code and data files, the agent **MUST ALWAYS** use `umoja` via `run_command`:
