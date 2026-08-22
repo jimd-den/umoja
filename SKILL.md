@@ -1,6 +1,6 @@
 ---
 name: umoja
-description: UMOJA (Umoja Manages Orchestrated Joint Agents) — MANDATORY FILE & KERNEL ENGINE FOR ANTIGRAVITY (AGY) & CLAUDE CODE. Always activate this skill for ANY task involving reading, inspecting, searching, editing, or creating files, running tests, exploring codebases, or handling multi-turn context. The agent MUST NOT use native view_file, grep_search, or edit tools to browse or edit code; instead, use `umoja kernel exec` (with Rhai functions `head`, `outline`, `slice_lines`, `load`, `grep`, `edit`, `replace_lines`, `replace_fn`, `write_b64`, `sum_by`, `group_by`, `count_by`, `sort_by`, `filter_eq`, `pluck`), `umoja agent call` (subagents/RLM), `umoja harness remember/search/rollback`, `umoja goal set/add/check/status`, `umoja heartbeat/schedule/tick`, `umoja send/inbox`, `umoja compact`, and SQLite memory with FTS5 search.
+description: UMOJA (Umoja Manages Orchestrated Joint Agents) — MANDATORY FILE & KERNEL ENGINE FOR ANTIGRAVITY (AGY) & CLAUDE CODE. Always activate this skill for ANY task involving reading, inspecting, searching, editing, or creating files, running tests, exploring codebases, or handling multi-turn context. The agent MUST NOT use native view_file, grep_search, or edit tools to browse or edit code; instead, use `umoja kernel exec` (with Rhai functions `head`, `outline`, `slice_lines`, `load`, `grep`, `edit`, `replace_lines`, `try_replace_lines`, `create_module`, `lsp_check`, `replace_fn`, `write_b64`, `sum_by`, `group_by`, `count_by`, `sort_by`, `filter_eq`, `pluck`), `umoja agent call` (subagents/RLM), `umoja harness remember/search/rollback`, `umoja goal set/add/check/status`, `umoja heartbeat/schedule/tick`, `umoja send/inbox`, `umoja compact`, and SQLite memory with FTS5 search.
 license: MIT
 compatibility: Linux or macOS. Rust toolchain to build. Pure Rust (Rhai) in-process kernel, embedded SQLite database. No Python or external socket daemon needed. No network access required.
 ---
@@ -8,6 +8,49 @@ compatibility: Linux or macOS. Rust toolchain to build. Pure Rust (Rhai) in-proc
 # UMOJA
 
 **U**moja **M**anages **O**rchestrated **J**oint **A**gents. *Umoja* is Swahili for "unity" — one persistent namespace, many agents, pulling in one direction.
+
+---
+
+## 🛡️ Speculative LSP/Compiler-Guarded Edits & Module Creation
+
+UMOJA supports **Speculative Edits** that automatically validate candidate code against the compiler/LSP before committing it to disk. If the edit causes a syntax or type error, **the file on disk is never corrupted** and the exact compiler error is returned to the agent.
+
+### 1. Speculative Line-Range Replacement (`try_replace_lines`)
+```bash
+umoja kernel exec '
+let patch = r#"
+    pub fn compute(val: i32) -> i32 {
+        val * 2
+    }
+"#;
+
+let res = try_replace_lines("crates/umoja-infra/src/calc.rs", 10, 15, patch);
+if res.ok {
+    print("✅ Edit applied cleanly!");
+} else {
+    print("❌ Edit rejected by compiler/LSP:");
+    for err in res.errors {
+        print(`  Line ${err.line}: ${err.message}`);
+    }
+}
+'
+```
+
+### 2. Creating New Files & Modules (`create_module`)
+When creating a new file, it must be attached to the project's module hierarchy and validated:
+```bash
+umoja kernel exec '
+let mod_code = r#"
+    pub fn hello() -> &'static str {
+        "hello world"
+    }
+"#;
+
+// Creates the file, automatically appends `pub mod greetings;` to parent mod.rs/lib.rs, and verifies compilation!
+let res = create_module("crates/umoja-infra/src/greetings.rs", mod_code);
+print(`Module created and valid: ${res.ok}`);
+'
+```
 
 ---
 
@@ -32,20 +75,9 @@ umoja goal check 2
 
 # 4. View status & visual progress
 umoja goal status
-# Output:
-# Refactor File System Module [active]
-# checklist: 2/4 steps complete (50%)
-#   [x] 1. Implement base64 streaming codec
-#   [x] 2. Add line-range replacement (replace_lines)
-#   [ ] 3. Add symbol-level replacement (replace_fn)
-#   [ ] 4. Run full workspace test suite
 
 # 5. Output pure markdown checklist
 umoja goal checklist
-
-# 6. Uncheck or remove steps if needed
-umoja goal uncheck 2
-umoja goal remove 4
 ```
 
 ---
@@ -173,6 +205,6 @@ This rule is **strictly mandatory and enforced** across all agent sessions:
 | Native `view_file` / `Read` | `umoja kernel exec 'print(head("path/to/file"))'` or `outline` or `slice_lines` |
 | Native `read_file` / multi-read | `umoja kernel exec 'let files = load("src/**/*.rs");'` then query |
 | Native `grep_search` / `find_by_name` | `umoja kernel exec 'let hits = grep("pattern", "crates/**/*.rs"); print(hits.len());'` |
-| Native `write_to_file` / `Write` | `umoja kernel exec 'write("path/to/file", text)'` or `write_b64` |
-| Native `replace_file_content` / `Edit` | `umoja kernel exec 'replace_lines("path", start, end, new_text)'` or `replace_fn` or `edit` |
+| Native `write_to_file` / `Write` | `umoja kernel exec 'write("path/to/file", text)'` or `create_module` or `write_b64` |
+| Native `replace_file_content` / `Edit` | `umoja kernel exec 'try_replace_lines("path", start, end, new_text)'` or `replace_lines` |
 | Native command execution for data | `umoja kernel exec 'let out = sh("git status"); print(out);'` |

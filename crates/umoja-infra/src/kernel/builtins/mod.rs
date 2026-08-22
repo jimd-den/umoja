@@ -2,6 +2,7 @@
 
 pub mod dataset;
 pub mod files;
+pub mod lsp;
 
 use rhai::Engine;
 
@@ -9,4 +10,5 @@ use rhai::Engine;
 pub fn register_all(engine: &mut Engine) {
     dataset::register_dataset_builtins(engine);
     files::register_files_builtins(engine);
+    lsp::register_lsp_builtins(engine);
 }
