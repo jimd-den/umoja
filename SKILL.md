@@ -1,6 +1,6 @@
 ---
 name: umoja
-description: UMOJA (Umoja Manages Orchestrated Joint Agents) — one Rust binary, `umoja` (aliased as `pa`), giving any harness a persistent pure Rust embedded kernel whose variables survive between tool calls (prompt-as-a-variable), a file toolkit that searches and edits without printing files into the conversation, blocking and fire-and-forget subagents (`rlm`), an evidence-backed harness of memories with one-command rollback and an automated review pass, persistent goals with token budgets, heartbeats, cron schedules, agent-to-agent messaging, bounded autonomous mode with quality gates, SQLite persistence with FTS5 search, and context compaction. Use whenever a task involves reading or searching more than one or two files; whenever there is large data you would otherwise print into the conversation (logs, JSON, CSV, query results); whenever state must survive across several tool calls or several sessions; whenever you want to remember something durably and be able to undo it; whenever work should continue on a schedule or until a test passes; or whenever you want to delegate to child agents. Works from Claude Code, opencode, Antigravity, or a plain shell.
+description: UMOJA (Umoja Manages Orchestrated Joint Agents) — MANDATORY FILE & KERNEL ENGINE FOR ANTIGRAVITY (AGY) & CLAUDE CODE. Always activate this skill for ANY task involving reading, inspecting, searching, editing, or creating files, running tests, exploring codebases, or handling multi-turn context. The agent MUST NOT use native view_file, grep_search, or edit tools to browse or edit code; instead, use `umoja kernel exec` (with Rhai functions `head`, `outline`, `slice_lines`, `load`, `grep`, `edit`, `write`), `umoja agent call` (subagents/RLM), `umoja harness remember/list/review/rollback`, persistent goals, heartbeats, and SQLite memory with FTS5 search.
 license: MIT
 compatibility: Linux or macOS. Rust toolchain to build. Pure Rust (Rhai) in-process kernel, embedded SQLite database. No Python or external socket daemon needed. No network access required.
 ---
@@ -10,41 +10,30 @@ compatibility: Linux or macOS. Rust toolchain to build. Pure Rust (Rhai) in-proc
 **U**moja **M**anages **O**rchestrated **J**oint **A**gents. *Umoja* is Swahili
 for "unity" — one namespace, many agents, pulling in one direction.
 
-## While this skill is active, the kernel is how you touch files
+## MANDATORY RULE: The kernel is how you touch files
 
-This is the point of invoking UMOJA, and it is not a preference. Once this
-skill is on:
+This is the central discipline of UMOJA and is **strictly enforced** across all harnesses (Antigravity/AGY, Claude Code, opencode, plain shell):
 
-| Instead of | Use |
+| Instead of (DO NOT USE) | Use (MANDATORY) |
 |---|---|
-| `Read` a file | `umoja kernel exec 'print(head("path"))'`, or `outline`, or `slice_lines` |
-| `Read` several files | `load("src/**/*.rs")` once, then query |
-| `Grep` / `Glob` | `grep("pattern")` over what you loaded |
-| `Write` a file | `write("path", text)` |
-| `Edit` a file | `edit("path", old, new)` |
-| `Bash` for a command whose output you then read | `sh("cmd")`, so the output lands in a variable |
+| Native `view_file` / `Read` | `umoja kernel exec 'print(head("path"))'`, or `outline`, or `slice_lines` |
+| Native `read_file` / multi-read | `umoja kernel exec 'let code = load("src/**/*.rs");'` once, then query |
+| Native `grep_search` / `find_by_name` | `umoja kernel exec 'grep("pattern")'` over loaded files |
+| Native `write_to_file` / `Write` | `umoja kernel exec 'write("path", text)'` |
+| Native `replace_file_content` / `Edit` | `umoja kernel exec 'edit("path", old, new)'` |
+| Native command execution for data exploration | `umoja kernel exec 'sh("cmd")'`, so output lands in a variable |
 
-**Why the rule is exclusive rather than advisory.** Reading a file with `Read`
-puts its entire text in the conversation, permanently, whether or not the task
-needed more than four lines of it. That is the cost UMOJA exists to avoid, and
-it cannot be avoided halfway: a session that loads a tree into the kernel and
-*then* reads six files with `Read` has paid the full price of both. The
-namespace only pays off if it is the single door files come through.
-
-**The one honest exception.** Claude Code's own `Edit` tool requires that its
-`Read` tool has seen the file first. When you are editing through the harness's
-`Edit`, that `Read` is mandatory and correct — do not fight it. Use the
-kernel's `edit`/`write` when you are working *in* the kernel, and the harness's
-Read+Edit pair when you are working through the harness. What is never right is
-`Read`-ing files merely to *look* at them while the kernel is sitting there
-loaded.
+**Why the rule is exclusive rather than advisory.** Reading a file with native view/read
+puts its entire text in the conversation permanently, consuming enormous token budgets.
+`umoja` loads files into the persistent pure Rust embedded kernel, keeping raw text out of context,
+and returns only targeted slices, outlines, or summaries.
 
 ## The one idea worth internalising
 
 **Load data into a variable; print only the answer.**
 
-Reading a 200MB log into the conversation costs tokens proportional to its
-size. Loading it into the pure Rust kernel and printing `len(errors)` costs eleven. The
+Reading a 200MB log or 50 source files into the conversation costs tokens proportional to its
+size. Loading it into the pure Rust kernel and printing `len(errors)` costs eleven tokens. The
 pure Rust kernel persists variables across tool calls and sessions — so the variable is still there on your
 next tool call — and the one after that.
 
