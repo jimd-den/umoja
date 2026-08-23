@@ -94,7 +94,24 @@ A body must say what was expected, what happened, and how to reproduce it, or
 it is refused. Reports stay local in `~/.umoja/reports.jsonl`; filing one
 never sends anything anywhere.
 
-## 6. Use the rest of the system
+## 6. What is recorded whether you ask or not
+
+`log_action` and `report_bug` need you to call them. Two things do not:
+**every `umoja` run** and **every file mutation** are written to SQLite at
+`~/.umoja/activity.db` automatically, including whether a checker was in the
+loop.
+
+```bash
+umoja activity              # recent commands
+umoja activity --changes    # recent mutations; unverified writes flagged UNVERIFIED
+```
+
+After 5 changes with no report filed, any `umoja` command prints a reminder
+to stderr naming the call to make. It asks once per batch; filing a report
+resets it. Do not ignore a defect you actually worked around.
+
+
+## 7. Use the rest of the system
 
 ```bash
 umoja goal set/add/check/status      # checklist in SQLite, one line in context
