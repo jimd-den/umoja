@@ -70,6 +70,19 @@ pub enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// What umoja has been asked to do, and what it changed.
+    ///
+    /// Recorded automatically for every run and every file mutation, so it
+    /// is a true record even of an agent that never logged anything itself.
+    Activity {
+        #[arg(long, short = 'n', default_value_t = 20)]
+        lines: i64,
+        /// Show file mutations instead of commands.
+        #[arg(long)]
+        changes: bool,
+    },
+
+
     /// Print a session's transcript.
     Log {
         #[arg(long, short = 'n', default_value_t = 40)]

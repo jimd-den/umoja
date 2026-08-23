@@ -129,6 +129,8 @@ fn file_report(kind: &str, component: Option<&str>, title: &str, body: &str) -> 
         return err(e);
     }
 
+    crate::activity::record_report(&id, kind.label(), &report.title);
+
     let mut map = Map::new();
     map.insert("ok".into(), Dynamic::from(true));
     map.insert("id".into(), Dynamic::from(id));

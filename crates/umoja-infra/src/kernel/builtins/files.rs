@@ -9,6 +9,16 @@ use glob::glob;
 use rhai::{Array, Dynamic, Engine, Map};
 use serde_json::Value;
 
+/// Record a write that nothing verified.
+///
+/// These are the mutations worth counting: `write`, `edit` and the
+/// line-range family put bytes on disk with no checker in the loop, so the
+/// journal is the only evidence they happened.
+fn note_unguarded(op: &str, path: &str) {
+    crate::activity::record_mutation(op, path, false, "none");
+    super::lsp::note_written(Path::new(path));
+}
+
 pub fn register_files_builtins(engine: &mut Engine) {
     // -------------------------------------------------------------------------
     // head & tail
@@ -49,14 +59,22 @@ pub fn register_files_builtins(engine: &mut Engine) {
         if let Some(parent) = Path::new(path).parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        std::fs::write(path, content).is_ok()
+        let ok = std::fs::write(path, content).is_ok();
+        if ok {
+            note_unguarded("write", path);
+        }
+        ok
     });
 
     engine.register_fn("edit", |path: &str, old_text: &str, new_text: &str| -> bool {
         if let Ok(content) = std::fs::read_to_string(path) {
             if content.contains(old_text) {
                 let replaced = content.replacen(old_text, new_text, 1);
-                return std::fs::write(path, replaced).is_ok();
+                let ok = std::fs::write(path, replaced).is_ok();
+                if ok {
+                    note_unguarded("edit", path);
+                }
+                return ok;
             }
         }
         false
@@ -66,7 +84,11 @@ pub fn register_files_builtins(engine: &mut Engine) {
     // Dedicated Line-Range & Position Editing (Immune to quote escaping)
     // -------------------------------------------------------------------------
     engine.register_fn("replace_lines", |path: &str, start: i64, end: i64, new_text: &str| -> bool {
-        replace_lines_in_file(path, start.max(1) as usize, end.max(1) as usize, new_text)
+        let ok = replace_lines_in_file(path, start.max(1) as usize, end.max(1) as usize, new_text);
+        if ok {
+            note_unguarded("replace_lines", path);
+        }
+        ok
     });
 
     engine.register_fn("insert_at_line", |path: &str, line_num: i64, text: &str| -> bool {

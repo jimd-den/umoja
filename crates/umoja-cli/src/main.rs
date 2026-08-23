@@ -34,23 +34,63 @@ pub(crate) mod exit {
     pub const ADAPTER: i32 = 70;
 }
 
+/// What was typed, split into the subcommand and the rest.
+///
+/// Taken from the raw arguments rather than from clap, so a run is still
+/// recorded when parsing itself is what failed.
+fn invocation() -> (String, String) {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let command: Vec<&String> = args.iter().take_while(|a| !a.starts_with('-')).take(2).collect();
+    let name = command
+        .iter()
+        .map(|s| s.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let rest = args
+        .iter()
+        .skip(command.len())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" ");
+    (
+        if name.is_empty() { "(none)".into() } else { name },
+        rest,
+    )
+}
+
+/// Record the run, then say goodbye — including the report nudge, which
+/// is written to stderr so it never contaminates `--json` output.
+fn finish(command: &str, args: &str, ok: bool, code: i32, started: std::time::Instant) -> ! {
+    umoja_infra::activity::record_run(
+        command,
+        args,
+        ok,
+        code,
+        started.elapsed().as_millis() as u64,
+    );
+    if let Some(warning) = umoja_infra::activity::nudge() {
+        eprintln!("{warning}");
+    }
+    std::process::exit(code);
+}
+
 fn main() {
+    let started = std::time::Instant::now();
+    let (command, args) = invocation();
     let cli = Cli::parse();
 
     let app = match App::build(&cli) {
         Ok(app) => app,
         Err(error) => {
             report(&error);
-            std::process::exit(code_for(&error));
+            finish(&command, &args, false, code_for(&error), started);
         }
     };
 
     match commands::dispatch(&cli, &app) {
         Ok(output) => {
             output.print(cli.json);
-            if output.code != 0 {
-                std::process::exit(output.code);
-            }
+            finish(&command, &args, output.code == 0, output.code, started);
         }
         Err(error) => {
             if cli.json {
@@ -66,7 +106,7 @@ fn main() {
             } else {
                 report(&error);
             }
-            std::process::exit(code_for(&error));
+            finish(&command, &args, false, code_for(&error), started);
         }
     }
 }

@@ -276,6 +276,7 @@ fn guarded_rewrite(pattern: &str, rewrite: &str, path: &str, lang: Option<&str>)
     map.insert("available".into(), Dynamic::from(true));
     map.insert("changed".into(), Dynamic::from(true));
     map.insert("errors".into(), Dynamic::from(Array::new()));
+    super::lsp::note_guard_as("ast_rewrite", &mut map, Path::new(path));
     Dynamic::from(map)
 }
 

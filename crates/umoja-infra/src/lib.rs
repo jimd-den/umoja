@@ -19,3 +19,4 @@ pub mod stores;
 pub mod summariser;
 pub mod sys;
 pub mod table;
+pub mod activity;

@@ -23,6 +23,7 @@ pub fn dispatch(cli: &Cli, app: &App) -> Result<Output> {
         Command::Status => lifecycle::status(app),
         Command::Doctor { fix } => lifecycle::doctor(app, *fix),
         Command::Shutdown { force } => lifecycle::shutdown(app, *force),
+        Command::Activity { lines, changes } => lifecycle::activity(*lines, *changes),
         Command::Log { lines, follow } => lifecycle::log(app, *lines, *follow),
         Command::Attach {
             selector,

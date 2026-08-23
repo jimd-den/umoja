@@ -241,6 +241,54 @@ pub fn shutdown(app: &App, force: bool) -> Result<Output> {
     ))
 }
 
+/// What umoja has been asked to do, and what it changed.
+///
+/// Read straight from the activity database rather than from a session,
+/// because the point of that journal is to survive agents that never
+/// registered a session in the first place.
+pub fn activity(lines: i64, changes: bool) -> Result<Output> {
+    let mut out = String::new();
+    if changes {
+        let rows = umoja_infra::activity::recent_mutations(lines);
+        if rows.is_empty() {
+            out.push_str("no file changes recorded yet\n");
+        }
+        for (at, op, path, guarded, checker) in rows {
+            let mark = if guarded { checker } else { "UNVERIFIED".into() };
+            out.push_str(&format!("{at}  {op:<18} {path}  [{mark}]\n"));
+        }
+        let unguarded = umoja_infra::activity::unguarded_count();
+        if unguarded > 0 {
+            out.push_str(&format!(
+                "\n{unguarded} change(s) went in with no checker in the loop.\n"
+            ));
+        }
+    } else {
+        let rows = umoja_infra::activity::recent_runs(lines);
+        if rows.is_empty() {
+            out.push_str("no runs recorded yet\n");
+        }
+        for (at, command, args, ok, ms) in rows {
+            let mark = if ok { " " } else { "!" };
+            let args = if args.len() > 60 {
+                format!("{}...", &args[..57])
+            } else {
+                args
+            };
+            out.push_str(&format!("{mark} {at}  {command:<16} {args}  ({ms}ms)\n"));
+        }
+    }
+
+    let pending = umoja_infra::activity::unreported_changes();
+    if pending > 0 {
+        out.push_str(&format!(
+            "\n{pending} change(s) since the last report was filed.\n"
+        ));
+    }
+    Ok(Output::message(out))
+}
+
+
 pub fn log(app: &App, lines: usize, follow: bool) -> Result<Output> {
     let session = app.session()?;
 
