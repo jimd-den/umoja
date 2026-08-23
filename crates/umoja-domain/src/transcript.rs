@@ -31,6 +31,25 @@ pub enum TranscriptEvent {
         ok: bool,
         duration_ms: u64,
     },
+    /// Something an agent chose to do, and the reason it gave.
+    ///
+    /// The rest of this enum records what the *system* observed.  This one
+    /// records intent, which nothing else can reconstruct after the fact:
+    /// a diff shows that a file changed, never why the agent thought it
+    /// should.  Without the reason a transcript can be replayed but not
+    /// reviewed.
+    ActionTaken {
+        action: String,
+        /// The file, command or subsystem acted on, when there is one.
+        target: Option<String>,
+        why: String,
+    },
+    /// A defect an agent filed against the tooling itself.
+    ReportFiled {
+        report_id: String,
+        kind: String,
+        title: String,
+    },
     SubagentAdmitted {
         child_id: String,
         name: String,
@@ -120,10 +139,30 @@ impl TranscriptRecord {
             }
             TranscriptEvent::UserPrompt { text } => format!("user: {}", clip(text, 72)),
             TranscriptEvent::AssistantTurn { text, usage } => {
-                format!("assistant ({} tok): {}", usage.total_tokens(), clip(text, 60))
+                format!(
+                    "assistant ({} tok): {}",
+                    usage.total_tokens(),
+                    clip(text, 60)
+                )
             }
-            TranscriptEvent::KernelExec { ok, duration_ms, .. } => {
-                format!("kernel exec {} in {duration_ms}ms", if *ok { "ok" } else { "failed" })
+            TranscriptEvent::KernelExec {
+                ok, duration_ms, ..
+            } => {
+                format!(
+                    "kernel exec {} in {duration_ms}ms",
+                    if *ok { "ok" } else { "failed" }
+                )
+            }
+            TranscriptEvent::ActionTaken {
+                action,
+                target,
+                why,
+            } => match target {
+                Some(t) => format!("{action} on {t} — {}", clip(why, 56)),
+                None => format!("{action} — {}", clip(why, 56)),
+            },
+            TranscriptEvent::ReportFiled { kind, title, .. } => {
+                format!("filed {kind}: {}", clip(title, 56))
             }
             TranscriptEvent::SubagentAdmitted { name, model, .. } => {
                 format!("admitted child {name} on {model}")
@@ -131,11 +170,17 @@ impl TranscriptRecord {
             TranscriptEvent::SubagentSettled { child_id, status } => {
                 format!("child {child_id} settled: {status}")
             }
-            TranscriptEvent::ChildUsageAttributed { child_id, child_usage, .. } => format!(
+            TranscriptEvent::ChildUsageAttributed {
+                child_id,
+                child_usage,
+                ..
+            } => format!(
                 "attributed {} tokens from {child_id}",
                 child_usage.total_tokens()
             ),
-            TranscriptEvent::MessageSent { receiver, status, .. } => {
+            TranscriptEvent::MessageSent {
+                receiver, status, ..
+            } => {
                 format!("message to {receiver}: {status}")
             }
             TranscriptEvent::MessageReceived { sender, .. } => format!("message from {sender}"),
@@ -148,13 +193,21 @@ impl TranscriptRecord {
             TranscriptEvent::GoalChanged { status, objective } => {
                 format!("goal {status}: {}", clip(objective, 56))
             }
-            TranscriptEvent::GateRan { command, passed, .. } => {
-                format!("gate {} {command}", if *passed { "passed" } else { "failed" })
+            TranscriptEvent::GateRan {
+                command, passed, ..
+            } => {
+                format!(
+                    "gate {} {command}",
+                    if *passed { "passed" } else { "failed" }
+                )
             }
             TranscriptEvent::AutonomousDecision { decision, reason } => {
                 format!("autonomous {decision}: {reason}")
             }
-            TranscriptEvent::Compacted { trigger, freed_tokens } => {
+            TranscriptEvent::Compacted {
+                trigger,
+                freed_tokens,
+            } => {
                 format!("compacted on {trigger}, freed {freed_tokens} tokens")
             }
             TranscriptEvent::Refined { op, summary, .. } => format!("refine {op}: {summary}"),
@@ -169,5 +222,8 @@ fn clip(text: &str, max: usize) -> String {
     if flat.chars().count() <= max {
         return flat;
     }
-    flat.chars().take(max.saturating_sub(3)).chain("...".chars()).collect()
+    flat.chars()
+        .take(max.saturating_sub(3))
+        .chain("...".chars())
+        .collect()
 }

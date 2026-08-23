@@ -23,6 +23,7 @@ pub mod ids;
 pub mod kernel;
 pub mod message;
 pub mod ports;
+pub mod report;
 pub mod runner;
 pub mod schedule;
 pub mod session;
@@ -51,9 +52,10 @@ pub mod prelude {
     pub use crate::kernel::{
         ExecOutcome, ExecRequest, KernelLanguage, KernelStatus, Stream, VarSummary,
     };
-    pub use crate::message::{AgentMessage, DeliveryStatus, Receipt, ReceiverRole};
     pub use crate::message::MessageLimits;
+    pub use crate::message::{AgentMessage, DeliveryStatus, Receipt, ReceiverRole};
     pub use crate::ports::*;
+    pub use crate::report::{Report, ReportKind, ReportStatus};
     pub use crate::runner::{RunOutcome, RunRequest, RunnerCapabilities};
     pub use crate::schedule::{JobStatus, ScheduleSpec, ScheduledJob};
     pub use crate::session::{Session, SessionKind, SessionStatus, Usage};
