@@ -151,9 +151,18 @@ pub(crate) fn checker_for(target: &Path) -> &'static str {
 /// A caller cannot otherwise distinguish "checked and clean" from "no
 /// checker exists for this file type", and the second is not a guarantee.
 pub(crate) fn note_guard(map: &mut Map, target: &Path) {
+    note_guard_as("try_edit", map, target)
+}
+
+/// As [`note_guard`], naming the operation for the activity journal.
+pub(crate) fn note_guard_as(op: &str, map: &mut Map, target: &Path) {
+    note_written(target);
     let checker = checker_for(target);
     map.insert("checker".into(), Dynamic::from(checker.to_string()));
     map.insert("guarded".into(), Dynamic::from(checker != "none"));
+    // Recorded here rather than at each call site: this runs on every kept
+    // edit, and an agent that never calls `log_action` still leaves a trail.
+    crate::activity::record_path_mutation(op, target, checker != "none", checker);
     if checker == "none" {
         map.insert(
             "warning".into(),
@@ -247,7 +256,61 @@ fn is_inside_cargo_workspace(path: &Path) -> bool {
         && (cwd.join("Cargo.toml").exists() || abs_path.join("Cargo.toml").exists())
 }
 
+/// Push a file's modification time far enough forward that `cargo` cannot
+/// mistake it for the build it already has.
+///
+/// Cargo decides a source is fresh when its mtime is not newer than the
+/// output built from it.  A candidate written moments after the previous
+/// check lands inside the same coarse timestamp tick, so cargo replays a
+/// cached verdict about the *old* bytes — and every `try_*` editor keeps
+/// its edit when that verdict says `ok`.  The guard is then silently
+/// unsound exactly when an agent edits quickly, which is the normal case.
+///
+/// Two seconds is enough to clear one-second filesystem granularity, and
+/// small enough that nothing else notices.
+fn bump_mtime(target: &Path) {
+    if !target.is_file() {
+        return;
+    }
+    let future = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
+    if let Ok(file) = std::fs::OpenOptions::new().write(true).open(target) {
+        let _ = file.set_modified(future);
+    }
+}
+
+/// Every file this process has written.
+///
+/// Bumping only the file being checked is not enough: `cargo check`
+/// compiles the whole crate, so a *different* file edited moments earlier
+/// in the same script is still stale and its errors are replayed from
+/// cache — or worse, not replayed at all. Anything we have touched has to
+/// look new.
+static WRITTEN: std::sync::RwLock<Vec<PathBuf>> = std::sync::RwLock::new(Vec::new());
+
+/// Note that `path` has been written, so the next check cannot miss it.
+pub(crate) fn note_written(path: &Path) {
+    if let Ok(mut guard) = WRITTEN.write() {
+        let p = path.to_path_buf();
+        if !guard.contains(&p) {
+            guard.push(p);
+        }
+    }
+}
+
+fn bump_everything_written() {
+    if let Ok(guard) = WRITTEN.read() {
+        for path in guard.iter() {
+            bump_mtime(path);
+        }
+    }
+}
+
 pub(crate) fn run_diagnostics(target: &Path) -> DiagnosticReport {
+    // Before asking cargo anything, make sure it will actually look —
+    // at this file and at everything else we have written.
+    bump_mtime(target);
+    bump_everything_written();
+
     let ext = target.extension().and_then(|s| s.to_str()).unwrap_or("");
 
     // 1. Rust file or workspace
@@ -504,7 +567,7 @@ fn try_speculative_replace_lines(path: &str, start: usize, end: usize, new_text:
         "lines_replaced".into(),
         Dynamic::from(format!("{start}-{end}")),
     );
-    note_guard(&mut map, Path::new(path));
+    note_guard_as("try_replace_lines", &mut map, Path::new(path));
     Dynamic::from(map)
 }
 
@@ -731,7 +794,7 @@ fn create_new_module(path: &str, content: &str, parent_mod_file: Option<&str>) -
         map.insert("compiler_errors".into(), Dynamic::from(err_arr));
     }
 
-    note_guard(&mut map, file_path);
+    note_guard_as("create_module", &mut map, file_path);
     Dynamic::from(map)
 }
 
@@ -779,6 +842,42 @@ mod tests {
             .eval::<rhai::Array>("capabilities().missing")
             .unwrap();
         let _ = missing.len();
+    }
+
+    /// The mechanism behind the stale-verdict fix: after a write, the file
+    /// must look strictly newer than anything built from it, or cargo
+    /// answers about the previous contents.
+    #[test]
+    fn a_checked_file_is_made_newer_than_any_build_of_it() {
+        let dir = std::env::temp_dir().join("umoja_bump_mtime");
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("candidate.rs");
+        std::fs::write(&file, "fn a() {}\n").unwrap();
+
+        let before = std::fs::metadata(&file).unwrap().modified().unwrap();
+        bump_mtime(&file);
+        let after = std::fs::metadata(&file).unwrap().modified().unwrap();
+
+        assert!(
+            after > before,
+            "the candidate must be newer than it was, or cargo replays a cached verdict"
+        );
+        assert!(
+            after > std::time::SystemTime::now(),
+            "it must also be newer than the build that is about to read it"
+        );
+    }
+
+    /// A directory is a legitimate target (`lsp_diagnostics` passes `.`),
+    /// and must not be disturbed.
+    #[test]
+    fn bumping_a_directory_is_a_no_op() {
+        let dir = std::env::temp_dir().join("umoja_bump_dir");
+        let _ = std::fs::create_dir_all(&dir);
+        let before = std::fs::metadata(&dir).unwrap().modified().unwrap();
+        bump_mtime(&dir);
+        let after = std::fs::metadata(&dir).unwrap().modified().unwrap();
+        assert_eq!(before, after);
     }
 
     #[test]
