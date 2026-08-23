@@ -21,19 +21,42 @@ pub fn register_lsp_builtins(engine: &mut Engine) {
     });
 
     // -------------------------------------------------------------------------
+    // Capability reporting — what can actually be checked here
+    // -------------------------------------------------------------------------
+    engine.register_fn("lsp_available", |path: &str| -> Dynamic {
+        availability_for(Path::new(path))
+    });
+
+    engine.register_fn("capabilities", || -> Dynamic { toolchain_capabilities() });
+
+    // -------------------------------------------------------------------------
     // Speculative, Guarded File Edits (Rejects on LSP/Compiler Error)
     // -------------------------------------------------------------------------
-    engine.register_fn("try_replace_lines", |path: &str, start: i64, end: i64, new_text: &str| -> Dynamic {
-        try_speculative_replace_lines(path, start.max(1) as usize, end.max(1) as usize, new_text)
-    });
+    engine.register_fn(
+        "try_replace_lines",
+        |path: &str, start: i64, end: i64, new_text: &str| -> Dynamic {
+            try_speculative_replace_lines(
+                path,
+                start.max(1) as usize,
+                end.max(1) as usize,
+                new_text,
+            )
+        },
+    );
 
-    engine.register_fn("try_edit", |path: &str, old_text: &str, new_text: &str| -> Dynamic {
-        try_speculative_edit(path, old_text, new_text)
-    });
+    engine.register_fn(
+        "try_edit",
+        |path: &str, old_text: &str, new_text: &str| -> Dynamic {
+            try_speculative_edit(path, old_text, new_text)
+        },
+    );
 
-    engine.register_fn("try_replace_fn", |path: &str, fn_name: &str, new_fn_body: &str| -> Dynamic {
-        try_speculative_replace_fn(path, fn_name, new_fn_body)
-    });
+    engine.register_fn(
+        "try_replace_fn",
+        |path: &str, fn_name: &str, new_fn_body: &str| -> Dynamic {
+            try_speculative_replace_fn(path, fn_name, new_fn_body)
+        },
+    );
 
     // -------------------------------------------------------------------------
     // Smart Module & New File Creation (Links parent mod & validates)
@@ -42,9 +65,12 @@ pub fn register_lsp_builtins(engine: &mut Engine) {
         create_new_module(path, content, None)
     });
 
-    engine.register_fn("create_module", |path: &str, content: &str, parent_mod: &str| -> Dynamic {
-        create_new_module(path, content, Some(parent_mod))
-    });
+    engine.register_fn(
+        "create_module",
+        |path: &str, content: &str, parent_mod: &str| -> Dynamic {
+            create_new_module(path, content, Some(parent_mod))
+        },
+    );
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +120,122 @@ fn to_dynamic_result(report: DiagnosticReport) -> Dynamic {
     Dynamic::from(map)
 }
 
+/// The checker that will actually run for `target`, or `"none"`.
+///
+/// `run_diagnostics` answers `ok` for a file it does not know how to
+/// check, which is indistinguishable from a file it checked and found
+/// clean.  A guarded edit to a `.ts` or `.go` file would then report
+/// success having verified nothing.  This says which tool will speak, so
+/// a caller can tell silence from assent.
+pub(crate) fn checker_for(target: &Path) -> &'static str {
+    let ext = target.extension().and_then(|s| s.to_str()).unwrap_or("");
+    if ext == "rs" || target.join("Cargo.toml").exists() || target == Path::new(".") {
+        if is_inside_cargo_workspace(target) {
+            "cargo"
+        } else if ext == "rs" {
+            "rustc"
+        } else {
+            "none"
+        }
+    } else if ext == "py" {
+        "python3"
+    } else if ext == "json" {
+        "json"
+    } else {
+        "none"
+    }
+}
+
+/// Stamp a result map with the checker that verified it.
+///
+/// A caller cannot otherwise distinguish "checked and clean" from "no
+/// checker exists for this file type", and the second is not a guarantee.
+pub(crate) fn note_guard(map: &mut Map, target: &Path) {
+    let checker = checker_for(target);
+    map.insert("checker".into(), Dynamic::from(checker.to_string()));
+    map.insert("guarded".into(), Dynamic::from(checker != "none"));
+    if checker == "none" {
+        map.insert(
+            "warning".into(),
+            Dynamic::from(
+                "written WITHOUT verification: no checker is configured for this file type"
+                    .to_string(),
+            ),
+        );
+    }
+}
+
+/// Whether an edit to `target` will be verified, and by what.
+fn availability_for(target: &Path) -> Dynamic {
+    let checker = checker_for(target);
+    let guarded = checker != "none";
+    let mut map = Map::new();
+    map.insert("checker".into(), Dynamic::from(checker.to_string()));
+    map.insert("guarded".into(), Dynamic::from(guarded));
+    map.insert(
+        "note".into(),
+        Dynamic::from(if guarded {
+            format!("edits to this path are verified by `{checker}` before they are kept")
+        } else {
+            "no checker is configured for this file type: a `try_*` edit will be written \
+             WITHOUT verification.  Prefer ast_rewrite where a grammar exists, and run the \
+             project's own test command afterwards."
+                .to_string()
+        }),
+    );
+    Dynamic::from(map)
+}
+
+/// Which external tools this machine actually has, so an agent can plan
+/// around what is missing instead of discovering it from a failure.
+fn toolchain_capabilities() -> Dynamic {
+    let probe = |bin: &str, arg: &str| -> Option<String> {
+        Command::new(bin)
+            .arg(arg)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| {
+                let text = String::from_utf8_lossy(&o.stdout);
+                text.lines().next().unwrap_or("").trim().to_string()
+            })
+    };
+
+    let tools = [
+        ("cargo", "--version", "rustup component add cargo"),
+        ("rustc", "--version", "rustup toolchain install stable"),
+        ("ast-grep", "--version", "cargo install ast-grep --locked"),
+        (
+            "python3",
+            "--version",
+            "install python3 from your package manager",
+        ),
+        ("git", "--version", "install git from your package manager"),
+    ];
+
+    let mut map = Map::new();
+    let mut missing = Array::new();
+    for (bin, arg, hint) in tools {
+        let mut entry = Map::new();
+        match probe(bin, arg) {
+            Some(v) => {
+                entry.insert("installed".into(), Dynamic::from(true));
+                entry.insert("version".into(), Dynamic::from(v));
+                entry.insert("install_hint".into(), Dynamic::from(String::new()));
+            }
+            None => {
+                entry.insert("installed".into(), Dynamic::from(false));
+                entry.insert("version".into(), Dynamic::from(String::new()));
+                entry.insert("install_hint".into(), Dynamic::from(hint.to_string()));
+                missing.push(Dynamic::from(bin.to_string()));
+            }
+        }
+        map.insert(bin.into(), Dynamic::from(entry));
+    }
+    map.insert("missing".into(), Dynamic::from(missing));
+    Dynamic::from(map)
+}
+
 fn is_inside_cargo_workspace(path: &Path) -> bool {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let abs_path = if path.is_absolute() {
@@ -101,10 +243,11 @@ fn is_inside_cargo_workspace(path: &Path) -> bool {
     } else {
         cwd.join(path)
     };
-    abs_path.starts_with(&cwd) && (cwd.join("Cargo.toml").exists() || abs_path.join("Cargo.toml").exists())
+    abs_path.starts_with(&cwd)
+        && (cwd.join("Cargo.toml").exists() || abs_path.join("Cargo.toml").exists())
 }
 
-fn run_diagnostics(target: &Path) -> DiagnosticReport {
+pub(crate) fn run_diagnostics(target: &Path) -> DiagnosticReport {
     let ext = target.extension().and_then(|s| s.to_str()).unwrap_or("");
 
     // 1. Rust file or workspace
@@ -125,16 +268,30 @@ fn run_diagnostics(target: &Path) -> DiagnosticReport {
                     if let Ok(val) = serde_json::from_str::<Value>(line) {
                         if val.get("reason").and_then(|r| r.as_str()) == Some("compiler-message") {
                             if let Some(msg) = val.get("message") {
-                                let level = msg.get("level").and_then(|l| l.as_str()).unwrap_or("error");
-                                let rendered = msg.get("rendered").and_then(|r| r.as_str()).unwrap_or("");
+                                let level =
+                                    msg.get("level").and_then(|l| l.as_str()).unwrap_or("error");
+                                let rendered =
+                                    msg.get("rendered").and_then(|r| r.as_str()).unwrap_or("");
                                 let spans = msg.get("spans").and_then(|s| s.as_array());
 
                                 let (file, line_num, col) = if let Some(spans) = spans {
                                     if let Some(first) = spans.first() {
                                         (
-                                            first.get("file_name").and_then(|f| f.as_str()).unwrap_or("").to_string(),
-                                            first.get("line_start").and_then(|l| l.as_u64()).unwrap_or(1) as u32,
-                                            first.get("column_start").and_then(|c| c.as_u64()).unwrap_or(1) as u32,
+                                            first
+                                                .get("file_name")
+                                                .and_then(|f| f.as_str())
+                                                .unwrap_or("")
+                                                .to_string(),
+                                            first
+                                                .get("line_start")
+                                                .and_then(|l| l.as_u64())
+                                                .unwrap_or(1)
+                                                as u32,
+                                            first
+                                                .get("column_start")
+                                                .and_then(|c| c.as_u64())
+                                                .unwrap_or(1)
+                                                as u32,
                                         )
                                     } else {
                                         (String::new(), 1, 1)
@@ -162,9 +319,17 @@ fn run_diagnostics(target: &Path) -> DiagnosticReport {
                 }
 
                 if !out.status.success() || !errors.is_empty() {
-                    return DiagnosticReport { ok: false, errors, warnings };
+                    return DiagnosticReport {
+                        ok: false,
+                        errors,
+                        warnings,
+                    };
                 }
-                return DiagnosticReport { ok: true, errors, warnings };
+                return DiagnosticReport {
+                    ok: true,
+                    errors,
+                    warnings,
+                };
             }
         } else if ext == "rs" {
             // Standalone Rust file
@@ -192,7 +357,11 @@ fn run_diagnostics(target: &Path) -> DiagnosticReport {
                         warnings: vec![],
                     };
                 }
-                return DiagnosticReport { ok: true, errors: vec![], warnings: vec![] };
+                return DiagnosticReport {
+                    ok: true,
+                    errors: vec![],
+                    warnings: vec![],
+                };
             }
         }
     } else if ext == "py" {
@@ -256,7 +425,11 @@ fn try_speculative_replace_lines(path: &str, start: usize, end: usize, new_text:
         Err(e) => {
             let mut map = Map::new();
             map.insert("ok".into(), Dynamic::from(false));
-            map.insert("error".into(), Dynamic::from(format!("Could not read file {path}: {e}")));
+            map.insert(
+                "error".into(),
+                Dynamic::from(format!("Could not read file {path}: {e}")),
+            );
+            map.insert("errors".into(), Dynamic::from(Array::new()));
             return Dynamic::from(map);
         }
     };
@@ -284,7 +457,11 @@ fn try_speculative_replace_lines(path: &str, start: usize, end: usize, new_text:
     if std::fs::write(path, &candidate).is_err() {
         let mut map = Map::new();
         map.insert("ok".into(), Dynamic::from(false));
-        map.insert("error".into(), Dynamic::from(format!("Could not write candidate to {path}")));
+        map.insert(
+            "error".into(),
+            Dynamic::from(format!("Could not write candidate to {path}")),
+        );
+        map.insert("errors".into(), Dynamic::from(Array::new()));
         return Dynamic::from(map);
     }
 
@@ -297,7 +474,14 @@ fn try_speculative_replace_lines(path: &str, start: usize, end: usize, new_text:
         let mut map = Map::new();
         map.insert("ok".into(), Dynamic::from(false));
         map.insert("rejected".into(), Dynamic::from(true));
-        map.insert("reason".into(), Dynamic::from("LSP compiler check failed. File was restored."));
+        map.insert(
+            "reason".into(),
+            Dynamic::from("LSP compiler check failed. File was restored."),
+        );
+        map.insert(
+            "error".into(),
+            Dynamic::from("LSP compiler check failed. File was restored."),
+        );
 
         let mut err_arr = Array::new();
         for err in report.errors {
@@ -316,7 +500,11 @@ fn try_speculative_replace_lines(path: &str, start: usize, end: usize, new_text:
     let mut map = Map::new();
     map.insert("ok".into(), Dynamic::from(true));
     map.insert("applied".into(), Dynamic::from(true));
-    map.insert("lines_replaced".into(), Dynamic::from(format!("{start}-{end}")));
+    map.insert(
+        "lines_replaced".into(),
+        Dynamic::from(format!("{start}-{end}")),
+    );
+    note_guard(&mut map, Path::new(path));
     Dynamic::from(map)
 }
 
@@ -326,7 +514,11 @@ fn try_speculative_edit(path: &str, old_text: &str, new_text: &str) -> Dynamic {
         Err(e) => {
             let mut map = Map::new();
             map.insert("ok".into(), Dynamic::from(false));
-            map.insert("error".into(), Dynamic::from(format!("Could not read file {path}: {e}")));
+            map.insert(
+                "error".into(),
+                Dynamic::from(format!("Could not read file {path}: {e}")),
+            );
+            map.insert("errors".into(), Dynamic::from(Array::new()));
             return Dynamic::from(map);
         }
     };
@@ -334,7 +526,11 @@ fn try_speculative_edit(path: &str, old_text: &str, new_text: &str) -> Dynamic {
     if !original.contains(old_text) {
         let mut map = Map::new();
         map.insert("ok".into(), Dynamic::from(false));
-        map.insert("error".into(), Dynamic::from(format!("Target text not found in {path}")));
+        map.insert(
+            "error".into(),
+            Dynamic::from(format!("Target text not found in {path}")),
+        );
+        map.insert("errors".into(), Dynamic::from(Array::new()));
         return Dynamic::from(map);
     }
 
@@ -343,6 +539,7 @@ fn try_speculative_edit(path: &str, old_text: &str, new_text: &str) -> Dynamic {
         let mut map = Map::new();
         map.insert("ok".into(), Dynamic::from(false));
         map.insert("error".into(), Dynamic::from("Failed writing candidate"));
+        map.insert("errors".into(), Dynamic::from(Array::new()));
         return Dynamic::from(map);
     }
 
@@ -352,13 +549,21 @@ fn try_speculative_edit(path: &str, old_text: &str, new_text: &str) -> Dynamic {
         let mut map = Map::new();
         map.insert("ok".into(), Dynamic::from(false));
         map.insert("rejected".into(), Dynamic::from(true));
-        map.insert("reason".into(), Dynamic::from("LSP compiler check failed. File was restored."));
+        map.insert(
+            "reason".into(),
+            Dynamic::from("LSP compiler check failed. File was restored."),
+        );
+        map.insert(
+            "error".into(),
+            Dynamic::from("LSP compiler check failed. File was restored."),
+        );
         return Dynamic::from(map);
     }
 
     let mut map = Map::new();
     map.insert("ok".into(), Dynamic::from(true));
     map.insert("applied".into(), Dynamic::from(true));
+    note_guard(&mut map, Path::new(path));
     Dynamic::from(map)
 }
 
@@ -368,7 +573,11 @@ fn try_speculative_replace_fn(path: &str, fn_name: &str, new_fn_body: &str) -> D
         Err(e) => {
             let mut map = Map::new();
             map.insert("ok".into(), Dynamic::from(false));
-            map.insert("error".into(), Dynamic::from(format!("Could not read file {path}: {e}")));
+            map.insert(
+                "error".into(),
+                Dynamic::from(format!("Could not read file {path}: {e}")),
+            );
+            map.insert("errors".into(), Dynamic::from(Array::new()));
             return Dynamic::from(map);
         }
     };
@@ -378,8 +587,13 @@ fn try_speculative_replace_fn(path: &str, fn_name: &str, new_fn_body: &str) -> D
 
     for (idx, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
-        if (trimmed.starts_with("fn ") || trimmed.starts_with("pub fn ") || trimmed.starts_with("async fn ") || trimmed.starts_with("pub async fn "))
-            && (trimmed.contains(&format!("fn {fn_name}")) || trimmed.contains(&format!("fn {fn_name}(")) || trimmed.contains(&format!("fn {fn_name}<")))
+        if (trimmed.starts_with("fn ")
+            || trimmed.starts_with("pub fn ")
+            || trimmed.starts_with("async fn ")
+            || trimmed.starts_with("pub async fn "))
+            && (trimmed.contains(&format!("fn {fn_name}"))
+                || trimmed.contains(&format!("fn {fn_name}("))
+                || trimmed.contains(&format!("fn {fn_name}<")))
         {
             start_idx = Some(idx);
             break;
@@ -389,7 +603,11 @@ fn try_speculative_replace_fn(path: &str, fn_name: &str, new_fn_body: &str) -> D
     let Some(s) = start_idx else {
         let mut map = Map::new();
         map.insert("ok".into(), Dynamic::from(false));
-        map.insert("error".into(), Dynamic::from(format!("Function '{fn_name}' not found in {path}")));
+        map.insert(
+            "error".into(),
+            Dynamic::from(format!("Function '{fn_name}' not found in {path}")),
+        );
+        map.insert("errors".into(), Dynamic::from(Array::new()));
         return Dynamic::from(map);
     };
 
@@ -430,7 +648,11 @@ fn create_new_module(path: &str, content: &str, parent_mod_file: Option<&str>) -
     if let Err(e) = std::fs::write(file_path, content) {
         let mut map = Map::new();
         map.insert("ok".into(), Dynamic::from(false));
-        map.insert("error".into(), Dynamic::from(format!("Failed creating file {path}: {e}")));
+        map.insert(
+            "error".into(),
+            Dynamic::from(format!("Failed creating file {path}: {e}")),
+        );
+        map.insert("errors".into(), Dynamic::from(Array::new()));
         return Dynamic::from(map);
     }
 
@@ -438,7 +660,12 @@ fn create_new_module(path: &str, content: &str, parent_mod_file: Option<&str>) -
     let mod_name = file_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     let is_rust = file_path.extension().and_then(|s| s.to_str()) == Some("rs");
 
-    if is_rust && !mod_name.is_empty() && mod_name != "mod" && mod_name != "lib" && mod_name != "main" {
+    if is_rust
+        && !mod_name.is_empty()
+        && mod_name != "mod"
+        && mod_name != "lib"
+        && mod_name != "main"
+    {
         let parent_target = if let Some(p) = parent_mod_file {
             PathBuf::from(p)
         } else {
@@ -474,7 +701,10 @@ fn create_new_module(path: &str, content: &str, parent_mod_file: Option<&str>) -
             if let Ok(parent_content) = std::fs::read_to_string(&parent_target) {
                 if !parent_content.contains(&format!("mod {mod_name};")) {
                     use std::io::Write;
-                    if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(&parent_target) {
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .append(true)
+                        .open(&parent_target)
+                    {
                         let _ = writeln!(f, "{mod_decl}");
                     }
                 }
@@ -501,12 +731,55 @@ fn create_new_module(path: &str, content: &str, parent_mod_file: Option<&str>) -
         map.insert("compiler_errors".into(), Dynamic::from(err_arr));
     }
 
+    note_guard(&mut map, file_path);
     Dynamic::from(map)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The dangerous case: a file type nothing can check.  A guarded
+    /// edit still writes it, so the result has to say so plainly rather
+    /// than reporting a success it did not earn.
+    #[test]
+    fn an_unverifiable_file_type_is_reported_as_unguarded() {
+        assert_eq!(checker_for(Path::new("a.ts")), "none");
+        assert_eq!(checker_for(Path::new("a.go")), "none");
+        assert_eq!(checker_for(Path::new("a.py")), "python3");
+        assert_eq!(checker_for(Path::new("a.json")), "json");
+
+        let mut map = Map::new();
+        note_guard(&mut map, Path::new("a.ts"));
+        assert_eq!(map.get("guarded").unwrap().clone().cast::<bool>(), false);
+        assert!(map.contains_key("warning"));
+
+        let mut checked = Map::new();
+        note_guard(&mut checked, Path::new("a.py"));
+        assert_eq!(checked.get("guarded").unwrap().clone().cast::<bool>(), true);
+        assert!(
+            !checked.contains_key("warning"),
+            "a file that really is checked carries no warning"
+        );
+    }
+
+    /// An agent must be able to ask what this machine has before it
+    /// plans around a tool that is not there.
+    #[test]
+    fn capabilities_reports_every_probed_tool() {
+        let mut engine = Engine::new();
+        register_lsp_builtins(&mut engine);
+        for tool in ["cargo", "rustc", "ast-grep", "python3", "git"] {
+            let script = format!("capabilities()[\"{tool}\"].installed");
+            engine
+                .eval::<bool>(&script)
+                .unwrap_or_else(|e| panic!("{tool} not reported: {e}"));
+        }
+        let missing = engine
+            .eval::<rhai::Array>("capabilities().missing")
+            .unwrap();
+        let _ = missing.len();
+    }
 
     #[test]
     fn test_diagnostics_report() {
