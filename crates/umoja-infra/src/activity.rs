@@ -32,21 +32,48 @@ pub fn set_db_path_for_test(path: Option<PathBuf>) {
     }
 }
 
+/// The project this work belongs to: the nearest ancestor holding a
+/// `.git`, else the working directory.
+///
+/// Activity is a fact about a project, not about the machine.  A single
+/// global journal mixes every repo together, so `umoja activity` answers
+/// the wrong question and the report nudge counts changes made somewhere
+/// else entirely.
+pub fn project_root() -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut here = cwd.as_path();
+    loop {
+        if here.join(".git").exists() {
+            return here.to_path_buf();
+        }
+        match here.parent() {
+            Some(parent) => here = parent,
+            None => break,
+        }
+    }
+    cwd
+}
+
 fn db_path() -> PathBuf {
     if let Ok(guard) = DB_OVERRIDE.read() {
         if let Some(p) = guard.as_ref() {
             return p.clone();
         }
     }
-    let home = std::env::var_os("UMOJA_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".umoja")
-        });
-    home.join("activity.db")
+    project_root().join(".umoja").join("activity.db")
+}
+
+/// Keep the journal out of the repository that hosts it.
+///
+/// The alternative is asking every project to add a line to its own
+/// `.gitignore`, which will not happen reliably and turns a tool detail
+/// into someone else's chore.  A directory that ignores itself needs no
+/// cooperation from the repo it sits in.
+fn ensure_self_ignored(dir: &Path) {
+    let marker = dir.join(".gitignore");
+    if !marker.exists() {
+        let _ = std::fs::write(&marker, "# Created by umoja: this journal is local state.\n*\n");
+    }
 }
 
 fn agent_name() -> String {
@@ -67,6 +94,7 @@ fn open() -> Option<Connection> {
     let path = db_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok()?;
+        ensure_self_ignored(parent);
     }
     let conn = Connection::open(&path).ok()?;
     let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
@@ -294,17 +322,100 @@ pub fn record_path_mutation(op: &str, path: &Path, guarded: bool, checker: &str)
 mod tests {
     use super::*;
 
-    fn with_temp_db<T>(name: &str, f: impl FnOnce() -> T) -> T {
-        static SERIALISE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _held = SERIALISE.lock().unwrap_or_else(|e| e.into_inner());
+    /// The db-path override is process-wide, so every test that touches it
+    /// must hold this lock or it will read another test's journal.
+    static SERIALISE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-        let dir = std::env::temp_dir().join(format!("umoja_activity_{name}"));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        set_db_path_for_test(Some(dir.join("activity.db")));
-        let out = f();
-        set_db_path_for_test(None);
-        out
+    fn serialised<T>(f: impl FnOnce() -> T) -> T {
+        let _held = SERIALISE.lock().unwrap_or_else(|e| e.into_inner());
+        f()
+    }
+
+    fn with_temp_db<T>(name: &str, f: impl FnOnce() -> T) -> T {
+        serialised(|| {
+            let dir = std::env::temp_dir().join(format!("umoja_activity_{name}"));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            set_db_path_for_test(Some(dir.join("activity.db")));
+            let out = f();
+            set_db_path_for_test(None);
+            out
+        })
+    }
+
+    /// Two projects must not share a journal, or `umoja activity` answers
+    /// about the wrong repo and the nudge counts changes made elsewhere.
+    #[test]
+    fn each_project_gets_its_own_journal() {
+        serialised(|| {
+            let base = std::env::temp_dir().join("umoja_project_scope");
+            let _ = std::fs::remove_dir_all(&base);
+            let alpha = base.join("alpha");
+            let beta = base.join("beta");
+            for p in [&alpha, &beta] {
+                std::fs::create_dir_all(p.join(".git")).unwrap();
+            }
+
+            let a_db = alpha.join(".umoja").join("activity.db");
+            let b_db = beta.join(".umoja").join("activity.db");
+            assert_ne!(a_db, b_db);
+
+            set_db_path_for_test(Some(a_db));
+            record_mutation("try_edit", "alpha/src/main.rs", true, "cargo");
+            assert_eq!(unreported_changes(), 1);
+
+            set_db_path_for_test(Some(b_db));
+            assert_eq!(
+                unreported_changes(),
+                0,
+                "a change in one project must not show up in another"
+            );
+            set_db_path_for_test(None);
+        })
+    }
+
+    /// The journal must not become the host repository's problem.
+    #[test]
+    fn the_journal_directory_ignores_itself() {
+        serialised(|| {
+            let dir = std::env::temp_dir().join("umoja_self_ignore");
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+
+            set_db_path_for_test(Some(dir.join("activity.db")));
+            record_run("kernel exec", "print(1)", true, 0, 1);
+            set_db_path_for_test(None);
+
+            let ignore = dir.join(".gitignore");
+            assert!(ignore.exists(), "the journal directory must ignore itself");
+            let body = std::fs::read_to_string(&ignore).unwrap();
+            assert!(body.contains('*'), "it must ignore everything under it");
+        })
+    }
+
+    /// A directory inside a git repository belongs to that repository, not
+    /// to wherever the agent happened to be standing.
+    #[test]
+    fn the_project_root_is_the_git_root() {
+        let base = std::env::temp_dir().join("umoja_git_root");
+        let _ = std::fs::remove_dir_all(&base);
+        let nested = base.join("crates").join("deep");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir_all(base.join(".git")).unwrap();
+
+        // The rule `project_root` applies, asserted without changing the
+        // process directory out from under every other test.
+        let mut here = nested.as_path();
+        let found = loop {
+            if here.join(".git").exists() {
+                break here.to_path_buf();
+            }
+            match here.parent() {
+                Some(p) => here = p,
+                None => break nested.clone(),
+            }
+        };
+        assert_eq!(found, base);
     }
 
     /// The point of this module: a run is recorded whether or not the
@@ -336,8 +447,8 @@ mod tests {
         });
     }
 
-    /// The nudge fires on a multiple of the threshold and stays quiet in
-    /// between, so it does not become noise that gets tuned out.
+    /// The nudge fires once a batch has gone unmentioned, then goes quiet
+    /// again, so it does not become noise that gets tuned out.
     #[test]
     fn the_nudge_fires_every_nth_unreported_change() {
         with_temp_db("nudge", || {
@@ -351,8 +462,6 @@ mod tests {
             assert!(warning.contains("report_bug"));
             assert!(warning.contains(&format!("{NUDGE_EVERY} files changed")));
 
-            // Having just asked, it goes quiet again rather than repeating
-            // on every subsequent command.
             assert!(nudge().is_none(), "it asks once, not continuously");
         });
     }
@@ -384,12 +493,10 @@ mod tests {
             }
             assert_eq!(unreported_changes(), NUDGE_EVERY);
 
-            // The clock has one-second resolution in RFC3339 only if we
-            // let it; rfc3339 here carries sub-second precision, so a
-            // report filed now is strictly after the mutations above.
             record_report("rep-1", "bug", "something misbehaved");
             assert_eq!(unreported_changes(), 0);
             assert!(nudge().is_none());
         });
     }
 }
+
