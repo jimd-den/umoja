@@ -29,6 +29,8 @@ pub fn register_lsp_builtins(engine: &mut Engine) {
 
     engine.register_fn("capabilities", || -> Dynamic { toolchain_capabilities() });
 
+    engine.register_fn("try_batch", |edits: Array| -> Dynamic { try_batch_edits(edits) });
+
     // -------------------------------------------------------------------------
     // Speculative, Guarded File Edits (Rejects on LSP/Compiler Error)
     // -------------------------------------------------------------------------
@@ -795,6 +797,123 @@ fn create_new_module(path: &str, content: &str, parent_mod_file: Option<&str>) -
     }
 
     note_guard_as("create_module", &mut map, file_path);
+    Dynamic::from(map)
+}
+
+
+/// Apply several edits as one transaction, checked once at the end.
+///
+/// The guarded editors validate each edit on its own, which cannot express
+/// a change that is only correct as a *set*: adding an enum variant and the
+/// match arm that handles it, or moving a `pub mod` declaration from one
+/// line to another. Each half is rejected alone, so the only way through
+/// was an unguarded `edit` followed by a hand-written `lsp_check` — the
+/// exact pattern that corrupts a tree when someone forgets the check.
+///
+/// Every edit is applied, the result is checked once, and if the checker
+/// objects *all* of them are rolled back together.
+fn try_batch_edits(edits: Array) -> Dynamic {
+    // [path, old, new] triples; the shape is checked before anything is
+    // written so a malformed batch cannot leave a half-applied tree.
+    let mut plan: Vec<(String, String, String)> = Vec::new();
+    for (i, item) in edits.iter().enumerate() {
+        let Some(triple) = item.clone().try_cast::<Array>() else {
+            return batch_error(format!("edit {i} is not an array"));
+        };
+        if triple.len() != 3 {
+            return batch_error(format!(
+                "edit {i} has {} parts; expected [path, old, new]",
+                triple.len()
+            ));
+        }
+        plan.push((
+            triple[0].clone().into_string().unwrap_or_default(),
+            triple[1].clone().into_string().unwrap_or_default(),
+            triple[2].clone().into_string().unwrap_or_default(),
+        ));
+    }
+    if plan.is_empty() {
+        return batch_error("a batch needs at least one edit".to_string());
+    }
+
+    // Snapshot every file the batch touches, once, before the first write.
+    let mut originals: Vec<(String, String)> = Vec::new();
+    for (path, _, _) in &plan {
+        if originals.iter().any(|(p, _)| p == path) {
+            continue;
+        }
+        match std::fs::read_to_string(path) {
+            Ok(text) => originals.push((path.clone(), text)),
+            Err(e) => return batch_error(format!("could not read {path}: {e}")),
+        }
+    }
+
+    let restore = |originals: &Vec<(String, String)>| {
+        for (path, text) in originals {
+            let _ = std::fs::write(path, text);
+        }
+    };
+
+    for (i, (path, old, new)) in plan.iter().enumerate() {
+        let Ok(current) = std::fs::read_to_string(path) else {
+            restore(&originals);
+            return batch_error(format!("could not re-read {path}"));
+        };
+        // The same anti-ambiguity rule as `edit`: a batch that guesses is
+        // worse than a batch that refuses, because it is harder to unpick.
+        let hits = current.matches(old.as_str()).count();
+        if hits != 1 {
+            restore(&originals);
+            return batch_error(format!(
+                "edit {i} matches {hits} times in {path}; the anchor must be unique"
+            ));
+        }
+        let updated = current.replacen(old.as_str(), new.as_str(), 1);
+        if std::fs::write(path, updated).is_err() {
+            restore(&originals);
+            return batch_error(format!("could not write {path}"));
+        }
+    }
+
+    // One check for the whole set, which is the point of the exercise.
+    let first = Path::new(&plan[0].0);
+    let report = run_diagnostics(first);
+    if !report.ok {
+        restore(&originals);
+        let mut errs = Array::new();
+        for e in report.errors {
+            let mut em = Map::new();
+            em.insert("file".into(), Dynamic::from(e.file));
+            em.insert("line".into(), Dynamic::from(e.line as i64));
+            em.insert("message".into(), Dynamic::from(e.message));
+            errs.push(Dynamic::from(em));
+        }
+        let mut map = Map::new();
+        map.insert("ok".into(), Dynamic::from(false));
+        map.insert("applied".into(), Dynamic::from(0_i64));
+        map.insert("rolled_back".into(), Dynamic::from(true));
+        map.insert(
+            "error".into(),
+            Dynamic::from("the batch did not compile; every edit was rolled back".to_string()),
+        );
+        map.insert("errors".into(), Dynamic::from(errs));
+        return Dynamic::from(map);
+    }
+
+    let mut map = Map::new();
+    map.insert("ok".into(), Dynamic::from(true));
+    map.insert("applied".into(), Dynamic::from(plan.len() as i64));
+    map.insert("errors".into(), Dynamic::from(Array::new()));
+    note_guard_as("try_batch", &mut map, first);
+    Dynamic::from(map)
+}
+
+fn batch_error(message: String) -> Dynamic {
+    let mut map = Map::new();
+    map.insert("ok".into(), Dynamic::from(false));
+    map.insert("applied".into(), Dynamic::from(0_i64));
+    map.insert("error".into(), Dynamic::from(message));
+    map.insert("errors".into(), Dynamic::from(Array::new()));
     Dynamic::from(map)
 }
 

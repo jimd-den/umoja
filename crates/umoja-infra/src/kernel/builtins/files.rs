@@ -66,18 +66,52 @@ pub fn register_files_builtins(engine: &mut Engine) {
         ok
     });
 
+    // Refuses an ambiguous anchor rather than guessing.
+    //
+    // Silently taking the first of several matches is the worst available
+    // behaviour: the edit succeeds, reports success, and lands somewhere
+    // the caller did not mean.  A caller who really does want every
+    // occurrence can say so with `edit_all`.
     engine.register_fn("edit", |path: &str, old_text: &str, new_text: &str| -> bool {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            if content.contains(old_text) {
-                let replaced = content.replacen(old_text, new_text, 1);
-                let ok = std::fs::write(path, replaced).is_ok();
-                if ok {
-                    note_unguarded("edit", path);
-                }
-                return ok;
-            }
+        let Ok(content) = std::fs::read_to_string(path) else {
+            return false;
+        };
+        if content.matches(old_text).count() != 1 {
+            return false;
         }
-        false
+        let replaced = content.replacen(old_text, new_text, 1);
+        let ok = std::fs::write(path, replaced).is_ok();
+        if ok {
+            note_unguarded("edit", path);
+        }
+        ok
+    });
+
+    // Every occurrence, when that is genuinely what is wanted.
+    engine.register_fn("edit_all", |path: &str, old_text: &str, new_text: &str| -> i64 {
+        let Ok(content) = std::fs::read_to_string(path) else {
+            return 0;
+        };
+        let count = content.matches(old_text).count() as i64;
+        if count == 0 {
+            return 0;
+        }
+        let replaced = content.replace(old_text, new_text);
+        if std::fs::write(path, replaced).is_ok() {
+            note_unguarded("edit_all", path);
+            count
+        } else {
+            0
+        }
+    });
+
+    // A non-mutating string replace.
+    //
+    // Rhai's own `String::replace` mutates in place and returns unit, so
+    // the obvious `write(path, text.replace(a, b))` passes `()` to `write`
+    // and fails with a signature error rather than doing the evident thing.
+    engine.register_fn("replaced", |text: &str, from: &str, to: &str| -> String {
+        text.replace(from, to)
     });
 
     // -------------------------------------------------------------------------

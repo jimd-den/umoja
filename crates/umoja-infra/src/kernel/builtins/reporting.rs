@@ -22,7 +22,7 @@ use chrono::Utc;
 use rhai::{Array, Dynamic, Engine, Map};
 use serde::{Deserialize, Serialize};
 
-use umoja_domain::report::{Report, ReportKind};
+use umoja_domain::report::{Report, ReportKind, ReportStatus};
 
 /// A redirect for tests, so a test never writes into the developer's real
 /// umoja home.  Mutating `$UMOJA_HOME` would be the obvious way and is not
@@ -152,6 +152,60 @@ fn read_reports() -> Vec<Report> {
         .collect()
 }
 
+
+/// Close a report, with a note saying what came of it.
+///
+/// A journal that can only be appended to fills with claims that turned
+/// out to be wrong — and a report the maintainer cannot trust is worse
+/// than no report, because it costs them the investigation. Withdrawing a
+/// mistaken report has to be as easy as filing one, or nobody will do it.
+///
+/// The original is never deleted: the record of having been wrong is part
+/// of what makes the rest credible.
+fn resolve_report(id: &str, status: &str, note: &str) -> Dynamic {
+    let status = match status.trim().to_ascii_lowercase().as_str() {
+        "resolved" | "fixed" | "done" => ReportStatus::Resolved,
+        "triaged" | "confirmed" => ReportStatus::Triaged,
+        "withdrawn" | "invalid" | "wrong" => ReportStatus::Resolved,
+        other => return err(format!("unknown status '{other}'; expected resolved, triaged or withdrawn")),
+    };
+    if note.trim().is_empty() {
+        return err("say what came of it: a bare status tells the maintainer nothing".to_string());
+    }
+
+    let mut reports = read_reports();
+    let Some(target) = reports.iter_mut().find(|r| r.id == id) else {
+        return err(format!("no report with id {id}"));
+    };
+    target.status = status;
+    target.body = format!(
+        "{}\n\n---\n**{}**: {}",
+        target.body,
+        if status == ReportStatus::Resolved { "resolved" } else { "triaged" },
+        note.trim()
+    );
+
+    let mut out = String::new();
+    for r in &reports {
+        match serde_json::to_string(r) {
+            Ok(line) => {
+                out.push_str(&line);
+                out.push('\n');
+            }
+            Err(e) => return err(format!("serialise report: {e}")),
+        }
+    }
+    if std::fs::write(reports_path(), out).is_err() {
+        return err(format!("could not write {}", reports_path().display()));
+    }
+
+    let mut map = Map::new();
+    map.insert("ok".into(), Dynamic::from(true));
+    map.insert("id".into(), Dynamic::from(id.to_string()));
+    map.insert("status".into(), Dynamic::from(status.label().to_string()));
+    Dynamic::from(map)
+}
+
 pub fn register_reporting_builtins(engine: &mut Engine) {
     // -------------------------------------------------------------------------
     // Filing defects against umoja itself
@@ -180,6 +234,10 @@ pub fn register_reporting_builtins(engine: &mut Engine) {
             file_report(kind, Some(component), title, body)
         },
     );
+
+    engine.register_fn("report_resolve", |id: &str, status: &str, note: &str| -> Dynamic {
+        resolve_report(id, status, note)
+    });
 
     engine.register_fn("reports", || -> Dynamic {
         let mut arr = Array::new();
