@@ -98,8 +98,9 @@ never sends anything anywhere.
 
 `log_action` and `report_bug` need you to call them. Two things do not:
 **every `umoja` run** and **every file mutation** are written to SQLite at
-`~/.umoja/activity.db` automatically, including whether a checker was in the
-loop.
+`<project>/.umoja/activity.db` automatically, including whether a checker was
+in the loop. The journal is per-project and ignores itself, so it never shows
+up in `git status`.
 
 ```bash
 umoja activity              # recent commands

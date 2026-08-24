@@ -188,8 +188,11 @@ person's decision.
 - **Every file mutation** — which builtin, which path, and whether a checker
   was actually in the loop.
 
-Both land in a SQLite database at `~/.umoja/activity.db`. An agent running on
-stale instructions still leaves a complete trail.
+Both land in a SQLite database at `<project>/.umoja/activity.db`, scoped to the
+project they belong to — the nearest ancestor holding a `.git`, else the
+working directory. That directory ignores itself, so nothing appears in your
+repository status and there is nothing to add to a `.gitignore`. An agent
+running on stale instructions still leaves a complete trail.
 
 ```bash
 umoja activity              # recent commands
@@ -207,33 +210,6 @@ to make. It asks once per batch, not on every command, and filing a report
 resets the count. *Nothing to report* is a fine answer — but say so by filing
 nothing, not by ignoring a real defect you worked around.
 
-
-## 📊 What is recorded whether you ask or not
-
-`log_action` and `report_bug` depend on you calling them. Two things do not:
-
-- **Every `umoja` run** — subcommand, arguments, cwd, exit code, duration.
-- **Every file mutation** — which builtin, which path, and whether a checker
-  was actually in the loop.
-
-Both land in a SQLite database at `~/.umoja/activity.db`. An agent running on
-stale instructions still leaves a complete trail.
-
-```bash
-umoja activity              # recent commands
-umoja activity --changes    # recent file mutations, unverified ones flagged
-umoja activity --changes -n 50
-```
-
-`umoja activity --changes` marks anything written with no checker as
-`UNVERIFIED` and totals them. A growing count there is the signal that edits
-are going in unchecked.
-
-**The tool will ask you for a report.** After every 5 changes with no report
-filed, any `umoja` command prints a reminder to stderr naming the exact call
-to make. It asks once per batch, not on every command, and filing a report
-resets the count. *Nothing to report* is a fine answer — but say so by filing
-nothing, not by ignoring a real defect you worked around.
 
 ## 📖 Rhai in one screen
 
