@@ -17,6 +17,7 @@ This is the most common way an agent destroys a working tree.
 | `try_replace_lines(path, start, end, text)` | line range, validated |
 | `try_edit(path, old, new)` | exact substring, validated |
 | `try_replace_fn(path, fn_name, body)` | whole function by name, validated |
+| `try_add_to_mod(path, mod_name, code)` | insert inside named module before closing brace, validated |
 | `ast_rewrite(pattern, rewrite, path[, lang])` | structural rewrite, validated |
 | `create_module(path, code[, parent_mod])` | new file, linked into the module tree, validated |
 

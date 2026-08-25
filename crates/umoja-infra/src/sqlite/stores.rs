@@ -10,8 +10,8 @@ use umoja_domain::harness::{HarnessEntry, HarnessScope, Refinement};
 use umoja_domain::heartbeat::Heartbeat;
 use umoja_domain::message::AgentMessage;
 use umoja_domain::ports::{
-    AutonomousStore, CompactionStore, GoalStore, HarnessStore, HeartbeatStore, MessageStore,
-    ScheduleStore, SessionStore, SubagentRegistry, TranscriptLog,
+    AutonomousStore, CompactionStore, GoalStore, HarnessStore, HeartbeatStore, LineageStore,
+    MessageStore, ScheduleStore, SessionStore, SubagentRegistry, TranscriptLog,
 };
 use umoja_domain::schedule::{JobStatus, ScheduledJob};
 use umoja_domain::session::Session;
@@ -868,6 +868,85 @@ impl CompactionStore for SqliteCompactionStore {
                 let state: CompactionState = serde_json::from_str(&data)
                     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
                 Ok(Some(state))
+            } else {
+                Ok(None)
+            }
+        })
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Lineage Store (Autonomous Evolutionary Search)
+// -----------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+pub struct SqliteLineageStore {
+    db: SqliteDb,
+}
+
+impl SqliteLineageStore {
+    pub fn new(db: SqliteDb) -> Self {
+        Self { db }
+    }
+}
+
+impl LineageStore for SqliteLineageStore {
+    fn append(&self, entry: &umoja_domain::lineage::LineageEntry) -> Result<()> {
+        let json = serde_json::to_string(entry).map_err(|e| DomainError::adapter("serialize lineage entry", e))?;
+        let created = entry.created_at.to_rfc3339();
+        self.db.with_conn(|conn| {
+            let mut stmt = conn.prepare_cached(
+                "INSERT INTO lineage_entries (id, target, generation, commit_hash, parent_id, rationale, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            )?;
+            stmt.execute(params![
+                entry.id,
+                entry.target,
+                entry.generation as i64,
+                entry.commit_hash,
+                entry.parent_id,
+                entry.rationale,
+                json,
+                created,
+            ])?;
+            Ok(())
+        })
+    }
+
+    fn list(&self, target: &str, limit: usize) -> Result<Vec<umoja_domain::lineage::LineageEntry>> {
+        self.db.with_conn(|conn| {
+            let mut stmt = conn.prepare_cached(
+                "SELECT data FROM lineage_entries WHERE target = ? ORDER BY generation DESC LIMIT ?"
+            )?;
+            let mut rows = stmt.query(params![target, limit as i64])?;
+            let mut entries = Vec::new();
+            while let Some(row) = rows.next()? {
+                let data: String = row.get(0)?;
+                if let Ok(entry) = serde_json::from_str(&data) {
+                    entries.push(entry);
+                }
+            }
+            Ok(entries)
+        })
+    }
+
+    fn pareto_frontier(&self, target: &str) -> Result<umoja_domain::lineage::ParetoFrontier> {
+        let all_entries = self.list(target, 1000)?;
+        let mut frontier = umoja_domain::lineage::ParetoFrontier::new();
+        for entry in all_entries.into_iter().rev() {
+            frontier.update(entry);
+        }
+        Ok(frontier)
+    }
+
+    fn get(&self, id: &str) -> Result<Option<umoja_domain::lineage::LineageEntry>> {
+        self.db.with_conn(|conn| {
+            let mut stmt = conn.prepare_cached("SELECT data FROM lineage_entries WHERE id = ?")?;
+            let mut rows = stmt.query([id])?;
+            if let Some(row) = rows.next()? {
+                let data: String = row.get(0)?;
+                let entry: umoja_domain::lineage::LineageEntry = serde_json::from_str(&data)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                Ok(Some(entry))
             } else {
                 Ok(None)
             }

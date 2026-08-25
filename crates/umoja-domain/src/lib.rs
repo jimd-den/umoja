@@ -66,3 +66,4 @@ pub mod prelude {
     pub use crate::timespec::{CronExpr, Interval};
     pub use crate::transcript::{TranscriptEvent, TranscriptRecord};
 }
+pub mod lineage;

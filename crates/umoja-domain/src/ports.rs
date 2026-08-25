@@ -109,6 +109,13 @@ pub trait CompactionStore: Send + Sync {
     fn get(&self, session_id: &str) -> Result<Option<CompactionState>>;
 }
 
+pub trait LineageStore: Send + Sync {
+    fn append(&self, entry: &crate::lineage::LineageEntry) -> Result<()>;
+    fn list(&self, target: &str, limit: usize) -> Result<Vec<crate::lineage::LineageEntry>>;
+    fn pareto_frontier(&self, target: &str) -> Result<crate::lineage::ParetoFrontier>;
+    fn get(&self, id: &str) -> Result<Option<crate::lineage::LineageEntry>>;
+}
+
 /// The persistent namespace.
 pub trait KernelPort: Send + Sync {
     fn language(&self) -> KernelLanguage;

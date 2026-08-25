@@ -4,6 +4,7 @@
 //! result. No handler contains a rule: if something here looks like a decision,
 //! it belongs in `pa-app` instead.
 
+mod evolution;
 mod lifecycle;
 mod plans;
 mod work;
@@ -46,6 +47,7 @@ pub fn dispatch(cli: &Cli, app: &App) -> Result<Output> {
         Command::Autonomous(command) => plans::autonomous(app, command),
         Command::Compact(command) => plans::compact(app, command),
         Command::Skills(command) => plans::skills(app, command),
+        Command::Evolve(command) => evolution::evolve(app, command),
         Command::Prompt => plans::prompt(app),
     }
 }

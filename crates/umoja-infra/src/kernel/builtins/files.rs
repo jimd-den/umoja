@@ -56,10 +56,7 @@ pub fn register_files_builtins(engine: &mut Engine) {
     });
 
     engine.register_fn("write", |path: &str, content: &str| -> bool {
-        if let Some(parent) = Path::new(path).parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let ok = std::fs::write(path, content).is_ok();
+        let ok = write_durable(path, content.as_bytes());
         if ok {
             note_unguarded("write", path);
         }
@@ -80,7 +77,7 @@ pub fn register_files_builtins(engine: &mut Engine) {
             return false;
         }
         let replaced = content.replacen(old_text, new_text, 1);
-        let ok = std::fs::write(path, replaced).is_ok();
+        let ok = write_durable(path, replaced.as_bytes());
         if ok {
             note_unguarded("edit", path);
         }
@@ -97,15 +94,13 @@ pub fn register_files_builtins(engine: &mut Engine) {
             return 0;
         }
         let replaced = content.replace(old_text, new_text);
-        if std::fs::write(path, replaced).is_ok() {
+        if write_durable(path, replaced.as_bytes()) {
             note_unguarded("edit_all", path);
             count
         } else {
             0
         }
     });
-
-    // A non-mutating string replace.
     //
     // Rhai's own `String::replace` mutates in place and returns unit, so
     // the obvious `write(path, text.replace(a, b))` passes `()` to `write`
@@ -307,7 +302,26 @@ pub fn register_files_builtins(engine: &mut Engine) {
         }
     });
 
-    // -------------------------------------------------------------------------
+    engine.register_fn("sh_status", |cmd: &str| -> Dynamic {
+        let output = Command::new("sh").arg("-c").arg(cmd).output();
+        let mut map = Map::new();
+        match output {
+            Ok(out) => {
+                let code = out.status.code().unwrap_or(-1) as i64;
+                map.insert("ok".into(), Dynamic::from(out.status.success()));
+                map.insert("code".into(), Dynamic::from(code));
+                map.insert("stdout".into(), Dynamic::from(String::from_utf8_lossy(&out.stdout).to_string()));
+                map.insert("stderr".into(), Dynamic::from(String::from_utf8_lossy(&out.stderr).to_string()));
+            }
+            Err(e) => {
+                map.insert("ok".into(), Dynamic::from(false));
+                map.insert("code".into(), Dynamic::from(-1i64));
+                map.insert("stdout".into(), Dynamic::from(String::new()));
+                map.insert("stderr".into(), Dynamic::from(format!("sh error: {e}")));
+            }
+        }
+        Dynamic::from(map)
+    });
     // JSON parsing & stringification
     // -------------------------------------------------------------------------
     engine.register_fn("parse_json", |s: &str| -> Dynamic {
@@ -341,11 +355,30 @@ pub fn register_files_builtins(engine: &mut Engine) {
 // Line-Range and Relative Editing Helpers
 // -----------------------------------------------------------------------------
 
+pub(crate) fn write_durable(path: impl AsRef<Path>, content: impl AsRef<[u8]>) -> bool {
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let res = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)?;
+        use std::io::Write;
+        file.write_all(content.as_ref())?;
+        file.sync_all()?;
+        Ok(())
+    })();
+    res.is_ok()
+}
+
 fn replace_lines_in_file(path: &str, start: usize, end: usize, new_text: &str) -> bool {
     if let Ok(content) = std::fs::read_to_string(path) {
         let lines: Vec<&str> = content.lines().collect();
         if lines.is_empty() && start == 1 {
-            return std::fs::write(path, new_text).is_ok();
+            return write_durable(path, new_text.as_bytes());
         }
         let s = (start.max(1) - 1).min(lines.len());
         let e = end.min(lines.len()).max(s);
@@ -359,11 +392,11 @@ fn replace_lines_in_file(path: &str, start: usize, end: usize, new_text: &str) -
             result.extend_from_slice(&lines[e..]);
         }
 
-        let mut output = result.join("\n");
-        if content.ends_with('\n') {
-            output.push('\n');
+        let mut output = result.join(std::str::from_utf8(&[10]).unwrap());
+        if content.ends_with(10 as char) {
+            output.push(10 as char);
         }
-        return std::fs::write(path, output).is_ok();
+        return write_durable(path, output.as_bytes());
     }
     false
 }
@@ -380,16 +413,19 @@ fn insert_line_at(path: &str, line_num: usize, text: &str) -> bool {
             result.extend_from_slice(&lines[idx..]);
         }
 
-        let mut output = result.join("\n");
-        if content.ends_with('\n') {
-            output.push('\n');
+        let mut output = result.join(std::str::from_utf8(&[10]).unwrap());
+        if content.ends_with(10 as char) {
+            output.push(10 as char);
         }
-        return std::fs::write(path, output).is_ok();
+        return write_durable(path, output.as_bytes());
     }
     false
 }
 
 fn insert_relative_to_anchor(path: &str, anchor: &str, text: &str, after: bool) -> bool {
+    if anchor.is_empty() {
+        return false;
+    }
     if let Ok(content) = std::fs::read_to_string(path) {
         let lines: Vec<&str> = content.lines().collect();
         for (idx, line) in lines.iter().enumerate() {
@@ -401,17 +437,16 @@ fn insert_relative_to_anchor(path: &str, anchor: &str, text: &str, after: bool) 
                 if target_idx < lines.len() {
                     result.extend_from_slice(&lines[target_idx..]);
                 }
-                let mut output = result.join("\n");
-                if content.ends_with('\n') {
-                    output.push('\n');
+                let mut output = result.join(std::str::from_utf8(&[10]).unwrap());
+                if content.ends_with(10 as char) {
+                    output.push(10 as char);
                 }
-                return std::fs::write(path, output).is_ok();
+                return write_durable(path, output.as_bytes());
             }
         }
     }
     false
 }
-
 // -----------------------------------------------------------------------------
 // Symbol-Level Block Replacement Helpers
 // -----------------------------------------------------------------------------
@@ -715,5 +750,31 @@ mod tests {
         assert_eq!(read_back, payload);
 
         let _ = std::fs::remove_file(temp_file);
+        let _ = std::fs::remove_file(temp_file);
+    }
+
+    #[test]
+    fn test_sh_status_and_insert_before_failures() {
+        let mut engine = Engine::new();
+        register_files_builtins(&mut engine);
+
+        // 1. sh_status success
+        let res: Map = engine.eval(r#"sh_status("echo hello")"#).unwrap();
+        assert_eq!(res.get("ok").unwrap().clone().cast::<bool>(), true);
+        assert_eq!(res.get("code").unwrap().clone().cast::<i64>(), 0);
+        assert!(res.get("stdout").unwrap().clone().into_string().unwrap().contains("hello"));
+
+        // 2. sh_status non-zero exit
+        let res_fail: Map = engine.eval(r#"sh_status("exit 42")"#).unwrap();
+        assert_eq!(res_fail.get("ok").unwrap().clone().cast::<bool>(), false);
+        assert_eq!(res_fail.get("code").unwrap().clone().cast::<i64>(), 42);
+
+        // 3. insert_before returns false when anchor does not exist
+        let temp_file = "/tmp/umoja_test_insert_before_missing.txt";
+        std::fs::write(temp_file, "line1\nline2\n").unwrap();
+        let ok: bool = engine.eval(&format!(r#"insert_before("{temp_file}", "nonexistent_anchor", "extra")"#)).unwrap();
+        assert_eq!(ok, false);
+        let _ = std::fs::remove_file(temp_file);
     }
 }
+

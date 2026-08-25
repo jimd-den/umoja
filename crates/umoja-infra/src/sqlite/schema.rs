@@ -108,6 +108,18 @@ pub fn initialize_schema(conn: &Connection) -> Result<()> {
             session_id TEXT PRIMARY KEY,
             data JSON NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS lineage_entries (
+            id TEXT PRIMARY KEY,
+            target TEXT NOT NULL,
+            generation INTEGER NOT NULL,
+            commit_hash TEXT,
+            parent_id TEXT,
+            rationale TEXT NOT NULL,
+            data JSON NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_lineage_target_gen ON lineage_entries(target, generation);
         "#,
     )?;
 

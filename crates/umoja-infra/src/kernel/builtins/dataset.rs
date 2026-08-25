@@ -165,6 +165,64 @@ pub fn register_dataset_builtins(engine: &mut Engine) {
     engine.register_fn("drop_n", |arr: Array, n: i64| -> Array {
         arr.iter().skip(n.max(0) as usize).cloned().collect()
     });
+
+    // -------------------------------------------------------------------------
+    // Type conversion & File ingestion
+    // -------------------------------------------------------------------------
+    engine.register_fn("parse_int", |s: &str| -> i64 {
+        s.trim().parse::<i64>().unwrap_or(0)
+    });
+    engine.register_fn("parse_float", |s: &str| -> f64 {
+        s.trim().parse::<f64>().unwrap_or(0.0)
+    });
+
+    engine.register_fn("read_lines", |path: &str| -> Array {
+        read_file_lines(path)
+    });
+    engine.register_fn("parse_csv", |path: &str| -> Array {
+        parse_delimited_file(path, 44 as char)
+    });
+    engine.register_fn("parse_tsv", |path: &str| -> Array {
+        parse_delimited_file(path, 9 as char)
+    });
+
+    // -------------------------------------------------------------------------
+    // Set & Frequency operations: difference, intersect, counter
+    // -------------------------------------------------------------------------
+    engine.register_fn("difference", |a: Array, b: Array| -> Array {
+        array_difference(&a, &b)
+    });
+    engine.register_fn("difference", |a: &mut Array, b: Array| -> Array {
+        array_difference(a, &b)
+    });
+
+    engine.register_fn("intersect", |a: Array, b: Array| -> Array {
+        array_intersect(&a, &b)
+    });
+    engine.register_fn("intersect", |a: &mut Array, b: Array| -> Array {
+        array_intersect(a, &b)
+    });
+
+    engine.register_fn("counter", |a: Array| -> Map {
+        array_counter(&a)
+    });
+    engine.register_fn("counter", |a: &mut Array| -> Map {
+        array_counter(a)
+    });
+
+    engine.register_fn("join_on", |a: Array, b: Array, key: &str| -> Array {
+        array_join_on(&a, &b, key)
+    });
+    engine.register_fn("join_on", |a: &mut Array, b: Array, key: &str| -> Array {
+        array_join_on(a, &b, key)
+    });
+
+    engine.register_fn("regex_find_all", |text: &str, pattern: &str| -> Array {
+        regex_find_all_matches(text, pattern)
+    });
+    engine.register_fn("regex_captures", |text: &str, pattern: &str| -> Array {
+        regex_capture_groups(text, pattern)
+    });
 }
 
 // -----------------------------------------------------------------------------
@@ -421,6 +479,132 @@ fn find_first_item(arr: &[Dynamic], field: &str, target_val: &Dynamic) -> Dynami
     Dynamic::UNIT
 }
 
+fn read_file_lines(path: &str) -> Array {
+    let mut arr = Array::new();
+    if let Ok(content) = std::fs::read_to_string(path) {
+        for line in content.lines() {
+            arr.push(Dynamic::from(line.to_string()));
+        }
+    }
+    arr
+}
+
+fn parse_delimited_file(path: &str, delimiter: char) -> Array {
+    let mut rows = Array::new();
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return rows;
+    };
+    let mut lines = content.lines();
+    let Some(header_line) = lines.next() else {
+        return rows;
+    };
+    let headers: Vec<String> = header_line
+        .split(delimiter)
+        .map(|h| h.trim().trim_matches(|c: char| c == 34 as char).to_string())
+        .collect();
+
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let cols: Vec<&str> = line.split(delimiter).collect();
+        let mut map = Map::new();
+        for (i, header) in headers.iter().enumerate() {
+            let val = cols.get(i).map(|c| c.trim().trim_matches(|c: char| c == 34 as char)).unwrap_or("");
+            map.insert(header.clone().into(), Dynamic::from(val.to_string()));
+        }
+        rows.push(Dynamic::from(map));
+    }
+    rows
+}
+
+fn array_difference(a: &[Dynamic], b: &[Dynamic]) -> Array {
+    let b_set: std::collections::HashSet<String> = b.iter().map(|x| x.to_string()).collect();
+    let mut result = Array::new();
+    for item in a {
+        if !b_set.contains(&item.to_string()) {
+            result.push(item.clone());
+        }
+    }
+    result
+}
+
+fn array_intersect(a: &[Dynamic], b: &[Dynamic]) -> Array {
+    let b_set: std::collections::HashSet<String> = b.iter().map(|x| x.to_string()).collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Array::new();
+    for item in a {
+        let s = item.to_string();
+        if b_set.contains(&s) && seen.insert(s) {
+            result.push(item.clone());
+        }
+    }
+    result
+}
+
+fn array_counter(a: &[Dynamic]) -> Map {
+    let mut map = Map::new();
+    for item in a {
+        let key = item.to_string();
+        let curr = map.get(key.as_str()).and_then(|v| v.clone().try_cast::<i64>()).unwrap_or(0);
+        map.insert(key.into(), Dynamic::from(curr + 1));
+    }
+    map
+}
+
+fn array_join_on(a: &[Dynamic], b: &[Dynamic], key: &str) -> Array {
+    let mut b_by_key: HashMap<String, Map> = HashMap::new();
+    for item in b {
+        if let Some(m) = item.clone().try_cast::<Map>() {
+            if let Some(val) = m.get(key) {
+                b_by_key.insert(val.to_string(), m);
+            }
+        }
+    }
+
+    let mut result = Array::new();
+    for item in a {
+        if let Some(mut m_a) = item.clone().try_cast::<Map>() {
+            if let Some(val) = m_a.get(key) {
+                if let Some(m_b) = b_by_key.get(&val.to_string()) {
+                    for (k, v) in m_b {
+                        if !m_a.contains_key(k) {
+                            m_a.insert(k.clone(), v.clone());
+                        }
+                    }
+                    result.push(Dynamic::from(m_a));
+                }
+            }
+        }
+    }
+    result
+}
+
+fn regex_find_all_matches(text: &str, pattern: &str) -> Array {
+    let mut result = Array::new();
+    if let Ok(re) = regex::Regex::new(pattern) {
+        for m in re.find_iter(text) {
+            result.push(Dynamic::from(m.as_str().to_string()));
+        }
+    }
+    result
+}
+
+fn regex_capture_groups(text: &str, pattern: &str) -> Array {
+    let mut result = Array::new();
+    if let Ok(re) = regex::Regex::new(pattern) {
+        for caps in re.captures_iter(text) {
+            let mut row = Array::new();
+            for m in caps.iter() {
+                let s = m.map(|m| m.as_str().to_string()).unwrap_or_default();
+                row.push(Dynamic::from(s));
+            }
+            result.push(Dynamic::from(row));
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,4 +634,54 @@ mod tests {
         let res = engine.eval::<bool>(script).unwrap();
         assert!(res);
     }
+
+    #[test]
+    fn test_dataset_parsing_sets_and_conversions() {
+        let mut engine = Engine::new();
+        register_dataset_builtins(&mut engine);
+
+        // 1. parse_int & parse_float
+        let val_i: i64 = engine.eval(r#"parse_int("42")"#).unwrap();
+        assert_eq!(val_i, 42);
+        let val_f: f64 = engine.eval(r#"parse_float("3.14")"#).unwrap();
+        assert!((val_f - 3.14).abs() < 1e-5);
+
+        // 2. read_lines & parse_csv
+        let csv_path = "/tmp/umoja_test_dataset.csv";
+        std::fs::write(csv_path, "id,name,score\n1,Alice,95\n2,Bob,80\n").unwrap();
+
+        let lines: Array = engine.eval(&format!(r#"read_lines("{csv_path}")"#)).unwrap();
+        assert_eq!(lines.len(), 3);
+
+        let rows: Array = engine.eval(&format!(r#"parse_csv("{csv_path}")"#)).unwrap();
+        assert_eq!(rows.len(), 2);
+        let first_row = rows[0].clone().cast::<Map>();
+        assert_eq!(first_row.get("name").unwrap().to_string(), "Alice");
+        assert_eq!(first_row.get("score").unwrap().to_string(), "95");
+
+        let _ = std::fs::remove_file(csv_path);
+
+        // 3. difference, intersect, counter
+        let diff: Array = engine.eval(r#"difference([1, 2, 3], [2, 3, 4])"#).unwrap();
+        assert_eq!(diff.len(), 1);
+        assert_eq!(diff[0].clone().cast::<i64>(), 1);
+
+        let inter: Array = engine.eval(r#"intersect([1, 2, 3], [2, 3, 4])"#).unwrap();
+        assert_eq!(inter.len(), 2);
+
+        let counts: Map = engine.eval(r#"counter(["apple", "banana", "apple"])"#).unwrap();
+        assert_eq!(counts.get("apple").unwrap().clone().cast::<i64>(), 2);
+        assert_eq!(counts.get("banana").unwrap().clone().cast::<i64>(), 1);
+
+        // 4. regex_find_all, regex_captures, join_on
+        let regex_matches: Array = engine.eval(r#"regex_find_all("ab ab", "ab")"#).unwrap();
+        assert_eq!(regex_matches.len(), 2);
+
+        let joined: Array = engine.eval(r#"join_on([#{id: 1, name: "Alice"}], [#{id: 1, role: "Admin"}], "id")"#).unwrap();
+        assert_eq!(joined.len(), 1);
+        let first_j = joined[0].clone().cast::<Map>();
+        assert_eq!(first_j.get("name").unwrap().to_string(), "Alice");
+        assert_eq!(first_j.get("role").unwrap().to_string(), "Admin");
+    }
 }
+

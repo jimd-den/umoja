@@ -15,6 +15,9 @@ rusqlite = { workspace = true, optional = false }
 rhai = { workspace = true, optional = false }
 glob = { workspace = true, optional = false }
 base64 = { workspace = true, optional = false }
+regex = { workspace = true, optional = false }
+ast-grep-core = { workspace = true, optional = false }
+ast-grep-language = { workspace = true, optional = false }
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -11,13 +11,15 @@ pub fn register_lsp_builtins(engine: &mut Engine) {
     // Diagnostic inspection
     // -------------------------------------------------------------------------
     engine.register_fn("lsp_check", |path: &str| -> Dynamic {
-        let res = run_diagnostics(Path::new(path));
-        to_dynamic_result(res)
+        let p = Path::new(path);
+        let res = run_diagnostics(p);
+        to_dynamic_result(res, p)
     });
 
     engine.register_fn("lsp_diagnostics", || -> Dynamic {
-        let res = run_diagnostics(Path::new("."));
-        to_dynamic_result(res)
+        let p = Path::new(".");
+        let res = run_diagnostics(p);
+        to_dynamic_result(res, p)
     });
 
     // -------------------------------------------------------------------------
@@ -73,6 +75,34 @@ pub fn register_lsp_builtins(engine: &mut Engine) {
             create_new_module(path, content, Some(parent_mod))
         },
     );
+
+    engine.register_fn(
+        "try_add_to_mod",
+        |path: &str, mod_name: &str, code: &str| -> Dynamic {
+            try_speculative_add_to_mod(path, mod_name, code)
+        },
+    );
+
+    // -------------------------------------------------------------------------
+    // Automatic Test Scaffolding & Structured Hypothesis Oracles
+    // -------------------------------------------------------------------------
+    engine.register_fn(
+        "scaffold_test",
+        |path: &str, mod_name: &str, test_name: &str, test_body: &str| -> Dynamic {
+            scaffold_unit_test(path, mod_name, test_name, test_body)
+        },
+    );
+
+    engine.register_fn(
+        "create_scratch_test",
+        |test_name: &str, crates: Array, code: &str| -> Dynamic {
+            scaffold_scratch_integration_test(test_name, crates, code)
+        },
+    );
+
+    engine.register_fn("run_test_oracle", |target_test: &str| -> Dynamic {
+        run_structured_test_oracle(target_test)
+    });
 }
 
 #[derive(Debug, Clone)]
@@ -91,7 +121,7 @@ pub struct DiagnosticReport {
     pub warnings: Vec<Diagnostic>,
 }
 
-fn to_dynamic_result(report: DiagnosticReport) -> Dynamic {
+fn to_dynamic_result(report: DiagnosticReport, target: &Path) -> Dynamic {
     let mut map = Map::new();
     map.insert("ok".into(), Dynamic::from(report.ok));
 
@@ -118,6 +148,16 @@ fn to_dynamic_result(report: DiagnosticReport) -> Dynamic {
         warn_arr.push(Dynamic::from(wm));
     }
     map.insert("warnings".into(), Dynamic::from(warn_arr));
+
+    let checker = checker_for(target);
+    map.insert("checker".into(), Dynamic::from(checker.to_string()));
+    map.insert("guarded".into(), Dynamic::from(checker != "none"));
+    if checker == "none" {
+        map.insert(
+            "warning".into(),
+            Dynamic::from("written WITHOUT verification: no checker is configured for this file type".to_string()),
+        );
+    }
 
     Dynamic::from(map)
 }
@@ -320,6 +360,7 @@ pub(crate) fn run_diagnostics(target: &Path) -> DiagnosticReport {
         if is_inside_cargo_workspace(target) {
             let output = Command::new("cargo")
                 .arg("check")
+                .arg("--tests")
                 .arg("--message-format=json")
                 .arg("--quiet")
                 .output();
@@ -588,12 +629,32 @@ fn try_speculative_edit(path: &str, old_text: &str, new_text: &str) -> Dynamic {
         }
     };
 
-    if !original.contains(old_text) {
+    let count = original.matches(old_text).count();
+    if count == 0 {
         let mut map = Map::new();
         map.insert("ok".into(), Dynamic::from(false));
         map.insert(
             "error".into(),
             Dynamic::from(format!("Target text not found in {path}")),
+        );
+        map.insert("errors".into(), Dynamic::from(Array::new()));
+        return Dynamic::from(map);
+    }
+    if count > 1 {
+        let mut map = Map::new();
+        map.insert("ok".into(), Dynamic::from(false));
+        let mut line_nums = Vec::new();
+        for (i, line) in original.lines().enumerate() {
+            if line.contains(old_text) {
+                line_nums.push((i + 1).to_string());
+            }
+        }
+        map.insert(
+            "error".into(),
+            Dynamic::from(format!(
+                "Ambiguous anchor: {old_text} matches {count} times in {path} (lines: {})",
+                line_nums.join(", ")
+            )),
         );
         map.insert("errors".into(), Dynamic::from(Array::new()));
         return Dynamic::from(map);
@@ -622,6 +683,17 @@ fn try_speculative_edit(path: &str, old_text: &str, new_text: &str) -> Dynamic {
             "error".into(),
             Dynamic::from("LSP compiler check failed. File was restored."),
         );
+        let mut err_arr = Array::new();
+        for err in report.errors {
+            let mut em = Map::new();
+            em.insert("file".into(), Dynamic::from(err.file));
+            em.insert("line".into(), Dynamic::from(err.line as i64));
+            em.insert("column".into(), Dynamic::from(err.column as i64));
+            em.insert("severity".into(), Dynamic::from(err.severity));
+            em.insert("message".into(), Dynamic::from(err.message));
+            err_arr.push(Dynamic::from(em));
+        }
+        map.insert("errors".into(), Dynamic::from(err_arr));
         return Dynamic::from(map);
     }
 
@@ -800,6 +872,281 @@ fn create_new_module(path: &str, content: &str, parent_mod_file: Option<&str>) -
     Dynamic::from(map)
 }
 
+
+fn try_speculative_add_to_mod(path: &str, mod_name: &str, code: &str) -> Dynamic {
+    let original = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            let mut map = Map::new();
+            map.insert("ok".into(), Dynamic::from(false));
+            map.insert("error".into(), Dynamic::from(format!("Could not read {path}: {e}")));
+            map.insert("errors".into(), Dynamic::from(Array::new()));
+            return Dynamic::from(map);
+        }
+    };
+
+    let lines: Vec<&str> = original.lines().collect();
+    let mut mod_start = None;
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with(&format!("mod {mod_name}"))
+            || trimmed.starts_with(&format!("pub mod {mod_name}"))
+        {
+            mod_start = Some(idx);
+            break;
+        }
+    }
+
+    let Some(start_idx) = mod_start else {
+        let mut map = Map::new();
+        map.insert("ok".into(), Dynamic::from(false));
+        map.insert(
+            "error".into(),
+            Dynamic::from(format!("Module {mod_name} not found in {path}")),
+        );
+        map.insert("errors".into(), Dynamic::from(Array::new()));
+        return Dynamic::from(map);
+    };
+
+    let mut brace_depth = 0i32;
+    let mut found_open = false;
+    let mut closing_idx = None;
+
+    for (idx, line) in lines[start_idx..].iter().enumerate() {
+        let actual_idx = start_idx + idx;
+        for c in line.chars() {
+            if c == 123 as char {
+                brace_depth += 1;
+                found_open = true;
+            } else if c == 125 as char {
+                brace_depth -= 1;
+            }
+        }
+        if found_open && brace_depth <= 0 {
+            closing_idx = Some(actual_idx);
+            break;
+        }
+    }
+
+    let Some(c_idx) = closing_idx else {
+        let mut map = Map::new();
+        map.insert("ok".into(), Dynamic::from(false));
+        map.insert(
+            "error".into(),
+            Dynamic::from(format!("Unclosed module {mod_name} in {path}")),
+        );
+        map.insert("errors".into(), Dynamic::from(Array::new()));
+        return Dynamic::from(map);
+    };
+
+    let mut result = Vec::new();
+    result.extend_from_slice(&lines[..c_idx]);
+    result.push(code);
+    result.extend_from_slice(&lines[c_idx..]);
+
+    let mut candidate = result.join(std::str::from_utf8(&[10]).unwrap());
+    if original.ends_with(10 as char) {
+        candidate.push(10 as char);
+    }
+
+    if !crate::kernel::builtins::files::write_durable(path, candidate.as_bytes()) {
+        let mut map = Map::new();
+        map.insert("ok".into(), Dynamic::from(false));
+        map.insert("error".into(), Dynamic::from("Failed writing candidate"));
+        map.insert("errors".into(), Dynamic::from(Array::new()));
+        return Dynamic::from(map);
+    }
+
+    let report = run_diagnostics(Path::new(path));
+    if !report.ok {
+        let _ = crate::kernel::builtins::files::write_durable(path, original.as_bytes());
+        let mut map = Map::new();
+        map.insert("ok".into(), Dynamic::from(false));
+        map.insert("rejected".into(), Dynamic::from(true));
+        map.insert("reason".into(), Dynamic::from("LSP compiler check failed. File was restored."));
+        map.insert("error".into(), Dynamic::from("LSP compiler check failed. File was restored."));
+        let mut err_arr = Array::new();
+        for err in report.errors {
+            let mut em = Map::new();
+            em.insert("file".into(), Dynamic::from(err.file));
+            em.insert("line".into(), Dynamic::from(err.line as i64));
+            em.insert("severity".into(), Dynamic::from(err.severity));
+            em.insert("message".into(), Dynamic::from(err.message));
+            err_arr.push(Dynamic::from(em));
+        }
+        map.insert("errors".into(), Dynamic::from(err_arr));
+        return Dynamic::from(map);
+    }
+
+    let mut map = Map::new();
+    map.insert("ok".into(), Dynamic::from(true));
+    map.insert("applied".into(), Dynamic::from(true));
+    map.insert("errors".into(), Dynamic::from(Array::new()));
+    note_guard_as("try_add_to_mod", &mut map, Path::new(path));
+    Dynamic::from(map)
+}
+
+/// Automatically creates or appends a structured unit test inside a module.
+fn scaffold_unit_test(path: &str, mod_name: &str, test_name: &str, test_body: &str) -> Dynamic {
+    let syntax_check = super::astgrep::validate_code_syntax(test_body, "rust");
+    let is_valid = syntax_check.clone().try_cast::<Map>().and_then(|m| m.get("ok").and_then(|v| v.clone().try_cast::<bool>())).unwrap_or(false);
+    if !is_valid {
+        let err_msg = syntax_check.try_cast::<Map>().and_then(|m| m.get("error").and_then(|v| v.clone().into_string().ok())).unwrap_or_else(|| "Syntax validation failed".to_string());
+        let mut map = Map::new();
+        map.insert("ok".into(), Dynamic::from(false));
+        map.insert("error".into(), Dynamic::from(format!("Pre-flight check rejected test body: {err_msg}")));
+        map.insert("errors".into(), Dynamic::from(Array::new()));
+        return Dynamic::from(map);
+    }
+
+    let original = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => {
+            let initial_code = format!("#[cfg(test)]\nmod {mod_name} {{\n    use super::*;\n\n    #[test]\n    fn {test_name}() {{\n{test_body}\n    }}\n}}\n");
+            return create_new_module(path, &initial_code, None);
+        }
+    };
+
+    let formatted_test = format!("    #[test]\n    fn {test_name}() {{\n{test_body}\n    }}\n");
+
+    if original.contains(&format!("mod {mod_name}")) || original.contains(&format!("pub mod {mod_name}")) {
+        try_speculative_add_to_mod(path, mod_name, &formatted_test)
+    } else {
+        let mod_wrapper = format!("\n#[cfg(test)]\nmod {mod_name} {{\n    use super::*;\n\n{formatted_test}}}\n");
+        let mut candidate = original.clone();
+        if !candidate.ends_with(10 as char) {
+            candidate.push(10 as char);
+        }
+        candidate.push_str(&mod_wrapper);
+
+        if !crate::kernel::builtins::files::write_durable(path, candidate.as_bytes()) {
+            let mut map = Map::new();
+            map.insert("ok".into(), Dynamic::from(false));
+            map.insert("error".into(), Dynamic::from("Failed writing scaffolded module"));
+            map.insert("errors".into(), Dynamic::from(Array::new()));
+            return Dynamic::from(map);
+        }
+
+        let report = run_diagnostics(Path::new(path));
+        if !report.ok {
+            let _ = crate::kernel::builtins::files::write_durable(path, original.as_bytes());
+            let mut map = Map::new();
+            map.insert("ok".into(), Dynamic::from(false));
+            map.insert("rejected".into(), Dynamic::from(true));
+            map.insert("error".into(), Dynamic::from("LSP compiler check failed on scaffold. File was restored."));
+            return Dynamic::from(map);
+        }
+
+        let mut map = Map::new();
+        map.insert("ok".into(), Dynamic::from(true));
+        map.insert("applied".into(), Dynamic::from(true));
+        note_guard_as("scaffold_test", &mut map, Path::new(path));
+        Dynamic::from(map)
+    }
+}
+
+/// Automatically builds a standalone integration scratch test in `tests/scratch_<name>.rs`.
+fn scaffold_scratch_integration_test(test_name: &str, crates: Array, code: &str) -> Dynamic {
+    let sanitized_name = test_name.replace(45 as char, "_");
+    let test_file = format!("tests/scratch_{sanitized_name}.rs");
+    let _ = std::fs::create_dir_all("tests");
+
+    let mut content = String::new();
+    for c in crates {
+        let c_str = c.to_string();
+        if !c_str.is_empty() {
+            content.push_str(&format!("use {c_str}::*;\n"));
+        }
+    }
+    content.push_str("\n");
+    content.push_str(code);
+    if !content.ends_with(10 as char) {
+        content.push(10 as char);
+    }
+
+    if !crate::kernel::builtins::files::write_durable(&test_file, content.as_bytes()) {
+        let mut map = Map::new();
+        map.insert("ok".into(), Dynamic::from(false));
+        map.insert("error".into(), Dynamic::from(format!("Could not create {test_file}")));
+        return Dynamic::from(map);
+    }
+
+    let report = run_diagnostics(Path::new(&test_file));
+    if !report.ok {
+        let _ = std::fs::remove_file(&test_file);
+        let mut map = Map::new();
+        map.insert("ok".into(), Dynamic::from(false));
+        map.insert("rejected".into(), Dynamic::from(true));
+        map.insert("error".into(), Dynamic::from("Scratch test failed LSP compilation. File was cleaned up."));
+        return Dynamic::from(map);
+    }
+
+    let mut map = Map::new();
+    map.insert("ok".into(), Dynamic::from(true));
+    map.insert("path".into(), Dynamic::from(test_file));
+    Dynamic::from(map)
+}
+
+/// Runs a test and produces an informative, structured hypothesis report.
+fn run_structured_test_oracle(target_test: &str) -> Dynamic {
+    let mut cmd = Command::new("cargo");
+    cmd.arg("test");
+    if !target_test.is_empty() {
+        cmd.arg(target_test);
+    }
+    cmd.arg("--").arg("--nocapture");
+
+    let out = match cmd.output() {
+        Ok(o) => o,
+        Err(e) => {
+            let mut map = Map::new();
+            map.insert("ok".into(), Dynamic::from(false));
+            map.insert("error".into(), Dynamic::from(format!("Failed running cargo test: {e}")));
+            return Dynamic::from(map);
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let full_text = format!("{stdout}\n{stderr}");
+
+    let mut map = Map::new();
+    map.insert("ok".into(), Dynamic::from(out.status.success()));
+    map.insert("code".into(), Dynamic::from(out.status.code().unwrap_or(-1) as i64));
+    map.insert("test_target".into(), Dynamic::from(target_test.to_string()));
+
+    // Parse assertion failure details
+    let mut panic_message = String::new();
+    let mut left_val = String::new();
+    let mut right_val = String::new();
+    let mut panic_loc = String::new();
+
+    for line in full_text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("thread ") && trimmed.contains("panicked at") {
+            panic_loc = trimmed.to_string();
+        } else if trimmed.starts_with("assertion `left == right` failed") || trimmed.starts_with("assertion failed:") {
+            panic_message = trimmed.to_string();
+        } else if trimmed.starts_with("left:") {
+            left_val = trimmed.trim_start_matches("left:").trim().to_string();
+        } else if trimmed.starts_with("right:") {
+            right_val = trimmed.trim_start_matches("right:").trim().to_string();
+        }
+    }
+
+    map.insert("panic_location".into(), Dynamic::from(panic_loc));
+    map.insert("panic_message".into(), Dynamic::from(panic_message));
+    map.insert("left".into(), Dynamic::from(left_val));
+    map.insert("right".into(), Dynamic::from(right_val));
+
+    if !out.status.success() {
+        let tail_lines: Vec<&str> = full_text.lines().rev().take(15).collect();
+        let tail_joined: Vec<&str> = tail_lines.into_iter().rev().collect();
+        map.insert("summary".into(), Dynamic::from(tail_joined.join("\n")));
+    }
+
+    Dynamic::from(map)
+}
 
 /// Apply several edits as one transaction, checked once at the end.
 ///
@@ -998,10 +1345,68 @@ mod tests {
         let after = std::fs::metadata(&dir).unwrap().modified().unwrap();
         assert_eq!(before, after);
     }
-
     #[test]
     fn test_diagnostics_report() {
         let report = run_diagnostics(Path::new("Cargo.toml"));
         assert!(report.ok);
     }
+    #[test]
+    fn test_ambiguous_anchor_and_lsp_check_metadata() {
+        let mut engine = Engine::new();
+        register_lsp_builtins(&mut engine);
+
+        // 1. Ambiguous anchor rejection in try_edit
+        let temp_file = "/tmp/umoja_test_ambig_unique.txt";
+        std::fs::write(temp_file, "fn foo() {}\nfn bar() {}\nfn foo() {}\n").unwrap();
+        let res: Map = engine.eval(&format!(r#"try_edit("{temp_file}", "fn foo() {{}}", "fn baz() {{}}")"#)).unwrap();
+        assert_eq!(res.get("ok").unwrap().clone().cast::<bool>(), false);
+        let err_msg = res.get("error").unwrap().clone().into_string().unwrap();
+        assert!(err_msg.contains("Ambiguous anchor"));
+        let _ = std::fs::remove_file(temp_file);
+
+        // 2. lsp_check metadata contains checker and guarded
+        let check_res: Map = engine.eval(r#"lsp_check("Cargo.toml")"#).unwrap();
+        assert!(check_res.contains_key("checker"));
+        assert!(check_res.contains_key("guarded"));
+
+        // 3. try_add_to_mod structural insertion
+        let temp_mod_file = "/tmp/umoja_test_mod_structural.rs";
+        std::fs::write(temp_mod_file, "mod tests {\n    fn existing() {}\n}\n").unwrap();
+        let add_res: Map = engine.eval(&format!(r#"try_add_to_mod("{temp_mod_file}", "tests", "    fn inserted() {{}}")"#)).unwrap();
+        assert_eq!(add_res.get("ok").unwrap().clone().cast::<bool>(), true);
+        let updated_content = std::fs::read_to_string(temp_mod_file).unwrap();
+        assert!(updated_content.contains("inserted()"));
+        assert!(updated_content.ends_with("}\n") || updated_content.ends_with("}"));
+        let _ = std::fs::remove_file(temp_mod_file);
+    }
+
+    #[test]
+    fn test_scaffold_test_and_scratch_integration() {
+        let mut engine = Engine::new();
+        register_lsp_builtins(&mut engine);
+
+        // 1. scaffold_test creates new test module with pre-flight check
+        let temp_src = "/tmp/umoja_test_scaffold.rs";
+        std::fs::write(temp_src, "pub fn add(a: i32, b: i32) -> i32 { a + b }\n").unwrap();
+
+        let res: Map = engine.eval(&format!(r#"scaffold_test("{temp_src}", "tests", "test_add", "        assert_eq!(add(1, 2), 3);")"#)).unwrap();
+        assert_eq!(res.get("ok").unwrap().clone().cast::<bool>(), true);
+        let updated = std::fs::read_to_string(temp_src).unwrap();
+        assert!(updated.contains("mod tests"));
+        assert!(updated.contains("fn test_add()"));
+        let _ = std::fs::remove_file(temp_src);
+
+        // 2. Pre-flight rejection on syntax error in scaffold_test
+        let bad_res: Map = engine.eval(&format!(r#"scaffold_test("/tmp/nonexistent.rs", "tests", "test_bad", "        let x = (1 + 2;")"#)).unwrap();
+        assert_eq!(bad_res.get("ok").unwrap().clone().cast::<bool>(), false);
+        assert!(bad_res.get("error").unwrap().clone().into_string().unwrap().contains("Pre-flight check rejected"));
+
+        // 3. create_scratch_test generates test file in tests/
+        let scratch_res: Map = engine.eval(r#"create_scratch_test("auto_oracle", [], "fn dummy() {}")"#).unwrap();
+        assert_eq!(scratch_res.get("ok").unwrap().clone().cast::<bool>(), true);
+        let scratch_path = scratch_res.get("path").unwrap().clone().into_string().unwrap();
+        assert!(std::path::Path::new(&scratch_path).exists());
+        let _ = std::fs::remove_file(scratch_path);
+    }
 }
+

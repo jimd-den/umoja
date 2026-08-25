@@ -19,7 +19,7 @@ compatibility: Linux or macOS. Rust toolchain to build. Pure Rust (Rhai) in-proc
 | Native `read_file` / multi-read | `load("src/**/*.rs")`, then query |
 | Native `grep_search` / `find_by_name` | `ast_grep` first, `grep` for prose and non-code |
 | Native `write_to_file` / `Write` | `create_module` (new code), `write_b64` (binary-safe) |
-| Native `replace_file_content` / `Edit` | `try_replace_lines`, `try_edit`, `try_replace_fn`, `ast_rewrite` |
+| Native `replace_file_content` / `Edit` | `try_replace_lines`, `try_edit`, `try_replace_fn`, `try_add_to_mod`, `ast_rewrite` |
 | Native command execution for data | `sh("...")` inside the kernel |
 
 ## 🛑 RULE 2 — Only guarded editors may touch code
@@ -51,6 +51,7 @@ if res.ok {
 | `try_replace_lines(path, start, end, text)` | Line range, validated, rolled back on error |
 | `try_edit(path, old, new)` | Exact substring, validated, rolled back on error |
 | `try_replace_fn(path, fn_name, body)` | Whole function by name, validated |
+| `try_add_to_mod(path, mod_name, code)` | Inserts code inside named module before closing brace, validated |
 | `ast_rewrite(pattern, rewrite, path[, lang])` | Structural rewrite, validated |
 | `create_module(path, code[, parent_mod])` | New file + links it into the module tree + validates |
 
@@ -233,12 +234,12 @@ umoja kernel exec 'print(slice_lines("src/lib.rs", 40, 80));'
 umoja kernel exec 'let f = load("crates/**/*.rs"); print(f.len());'
 umoja kernel exec 'let h = grep("TODO", "**/*.md"); print(h.len());'
 ```
-
 Load once, reduce in the kernel, print the answer — never the data. Dataset
 builtins do the reducing natively: `sum_by`, `avg_by`, `min_by`, `max_by`,
 `group_by`, `count_by`, `sort_by`, `sort_by_desc`, `filter_eq`, `filter_neq`,
 `filter_contains`, `pluck`, `unique`, `unique_by`, `take_n`, `drop_n`,
-`find_first`, `json_parse`, `to_json`.
+`find_first`, `read_lines`, `parse_csv`, `parse_tsv`, `difference`, `intersect`,
+`counter`, `parse_int`, `parse_float`, `json_parse`, `to_json`, `sh_status`.
 
 ## ✅ Goals — the checklist that costs no tokens
 
@@ -272,7 +273,7 @@ Check `umoja inbox` at the start of a turn when you are part of a fleet.
 ## 🧠 Memory, subagents, continuity
 
 ```bash
-umoja harness remember tdd "the false-proof test must be written first"
+umoja harness remember --evidence "test trace" tdd "the false-proof test must be written first"
 umoja harness search "false proof"
 umoja harness rollback <id>
 
@@ -287,46 +288,91 @@ umoja compact                   # fold the transcript when context tightens
 
 ---
 
-## 🔴🟢 Playbook: Hypothesis-Driven TDD
+## 🔴🟢 Playbook: Hypothesize, Test & Drill-Down Testing Workflow
 
+A disciplined, token-efficient testing lifecycle for agents combining structural analysis, targeted assertions, and guarded execution:
+
+```
+ [ 1. HYPOTHESIZE & SEARCH ] ──► [ 2. STAGE RED TEST ] ──► [ 3. DRILL-DOWN IMPLEMENTATION ]
+ (ast_grep, outline, load)        (try_add_to_mod, sh_status)   (try_replace_fn, ast_rewrite)
+            ▲                                                                   │
+            │                                                                   ▼
+ [ 5. PERSIST & REMEMBER ]   ◄─── [ 4. VERIFY SUITE ]  ◄────────────────────────┘
+(log_action & remember)          (sh_status workspace check)
+```
+
+### Step 1: Formulate Hypothesis & Drill Down Structurally
+Locate candidate symbols and AST nodes without dumping entire files into context:
 ```bash
-umoja goal set "TDD: unique_by dataset builtin"
-umoja goal add "Write failing test"
-umoja goal add "Minimal implementation"
-umoja goal add "Verify workspace"
-
-# RED — the failing test first; it is the only evidence the change did anything
 umoja kernel exec '
-let test = r###"
+// Find candidate function signatures structurally
+let hits = ast_grep("fn $NAME($$$ARGS) -> $RET { $$$BODY }", "crates/**/*.rs", "rust");
+for m in hits.matches {
+    if m.text.contains("calc_multiplier") {
+        print(`found in ${m.file}:${m.line}`);
+    }
+}
+'
+```
+
+### Step 2: Stage the Red Test with Structural Placement (`try_add_to_mod`)
+Insert the failing test cleanly inside `mod tests { ... }`. Test code is checked by `cargo check --tests` automatically during insertion:
+```bash
+umoja kernel exec '
+let test_code = r###"
     #[test]
-    fn unique_by_collapses_duplicates() {
-        let mut engine = Engine::new();
-        register_dataset_builtins(&mut engine);
-        assert!(engine.eval::<bool>(r#"[#{id: 1}, #{id: 1}].unique_by("id").len() == 1"#).unwrap());
+    fn test_fractional_budget_scaling() {
+        assert_eq!(calc_multiplier(100, 2), 200);
     }
 "###;
-let r = try_replace_lines("crates/infra/src/kernel/builtins/dataset.rs", 400, 405, test);
-print(`test staged: ${r.ok}`);
-print(sh("cargo test unique_by 2>&1 | tail -5"));
-'
-umoja goal check 1
 
-# GREEN — smallest change that passes
-umoja kernel exec '
-let r = try_edit("crates/infra/src/kernel/builtins/dataset.rs", anchor, anchor + impl_line);
-print(`impl: ${r.ok} (checked by ${r.checker})`);
-print(sh("cargo test unique_by 2>&1 | tail -5"));
-'
-umoja goal check 2
+let r = try_add_to_mod("crates/umoja-domain/src/token.rs", "tests", test_code);
+print(`test placed: ${r.ok}`);
 
-# VERIFY, RECORD, REMEMBER
-umoja kernel exec '
-print(sh("cargo test --workspace 2>&1 | grep \"test result\""));
-log_action("added unique_by", "dataset.rs", "group_by was being misused to dedupe, which allocated the whole grouping");
+// Verify Red State using the oracle without flooding the context:
+let check = sh_status("cargo test test_fractional_budget_scaling");
+if !check.ok {
+    print(`Confirmed RED (exit ${check.code}): expected failure`);
+}
 '
-umoja goal check 3
-umoja goal complete
-umoja harness remember tdd "unique_by keeps first occurrence; verified by workspace suite"
+```
+
+### Step 3: Targeted Guarded Implementation (`try_replace_fn` / `ast_rewrite`)
+Implement the fix at the precise symbol level. Guarded editors immediately roll back if diagnostics fail:
+```bash
+umoja kernel exec '
+let new_fn = r###"
+pub fn calc_multiplier(base: u32, factor: u32) -> u32 {
+    base * factor
+}
+"###;
+
+let r = try_replace_fn("crates/umoja-domain/src/token.rs", "calc_multiplier", new_fn);
+print(`applied: ${r.ok} (${r.checker})`);
+'
+```
+
+### Step 4: Verify Green & Full Workspace Suite (`sh_status`)
+Confirm the target test passes and verify zero regressions across the workspace:
+```bash
+umoja kernel exec '
+let target = sh_status("cargo test test_fractional_budget_scaling");
+assert(target.ok, "Target test must pass");
+
+let suite = sh_status("cargo test --workspace");
+assert(suite.ok, "Full test suite must pass");
+print("All tests GREEN across workspace!");
+'
+```
+
+### Step 5: Log Rationale & Remember Harness Evidence
+Log the exact change reasoning to the journal and commit evidence into harness memory:
+```bash
+umoja kernel exec '
+log_action("implemented calc_multiplier with overflow protection", "crates/umoja-domain",
+           "needed for token budget compaction calculations");
+'
+umoja harness remember --evidence "92/92 tests passed in cargo test --workspace" "token_budget" "calc_multiplier handles integer scaling"
 ```
 
 ## Kernel lifecycle
@@ -341,3 +387,4 @@ umoja kernel stop             # end it
 
 An exception is an outcome, not a catastrophe: you get the error, and **the
 namespace is untouched** — whatever you loaded ten minutes ago is still there.
+

@@ -56,6 +56,7 @@ pub struct App {
     pub schedules: Arc<ScheduleService>,
     pub autonomy: Arc<AutonomyService>,
     pub compaction: CompactionService,
+    pub lineage: Arc<dyn LineageStore>,
     pub skills: SkillService,
     pub supervisor: SupervisorService,
 
@@ -107,6 +108,7 @@ impl App {
         let registry: Arc<dyn SubagentRegistry> = Arc::new(FsSubagentRegistry::new(&paths));
         let autonomous_store: Arc<dyn AutonomousStore> = Arc::new(FsAutonomousStore::new(&paths));
         let compaction_store: Arc<dyn CompactionStore> = Arc::new(FsCompactionStore::new(&paths));
+        let lineage: Arc<dyn LineageStore> = Arc::new(umoja_infra::sqlite::stores::SqliteLineageStore::new(umoja_infra::sqlite::db::SqliteDb::open(&format!("{}/state.db", paths.root().display()))?));
         let supervisor_port: Arc<dyn ProcessSupervisor> = Arc::new(UnixProcessSupervisor);
         let gates: Arc<dyn GateRunner> = Arc::new(ShellGateRunner::default());
         let catalog: Arc<dyn SkillCatalog> = Arc::new(FsSkillCatalog::default());
@@ -211,6 +213,7 @@ impl App {
             sessions,
             transcript,
             runner,
+            lineage,
             paths,
             env,
             workdir,

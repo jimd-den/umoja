@@ -135,6 +135,9 @@ pub enum Command {
     /// Context compaction.
     #[command(subcommand)]
     Compact(CompactCommand),
+    /// Autonomous evolutionary search & lineage optimization (NVIDIA AVO).
+    #[command(subcommand)]
+    Evolve(EvolveCommand),
     /// Installed skills, across every harness's directories.
     #[command(subcommand)]
     Skills(SkillsCommand),
@@ -456,6 +459,24 @@ pub enum ScheduleCommand {
         target: Option<String>,
     },
     Cancel { id: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum EvolveCommand {
+    /// List lineage progression for target.
+    Lineage {
+        target: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Show Pareto optimal candidate for target.
+    Best {
+        target: String,
+    },
+    /// Show status of evolutionary search for target.
+    Status {
+        target: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]

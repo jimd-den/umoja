@@ -8,6 +8,8 @@ pub mod reporting;
 
 use rhai::Engine;
 
+pub mod lineage;
+
 /// Registers all native built-in functions into a Rhai engine.
 pub fn register_all(engine: &mut Engine) {
     astgrep::register_astgrep_builtins(engine);
@@ -15,4 +17,5 @@ pub fn register_all(engine: &mut Engine) {
     files::register_files_builtins(engine);
     lsp::register_lsp_builtins(engine);
     reporting::register_reporting_builtins(engine);
+    lineage::register_lineage_builtins(engine);
 }
