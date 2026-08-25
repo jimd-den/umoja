@@ -38,15 +38,20 @@
 - `run_test_oracle(test_name)` — Parses failure diffs (`left == right`) into structured maps.
 
 ### 4. Evolutionary Transcendence (Autonomous Variation & Lineage Engine)
-*Mutate, evaluate, persist, or be discarded.*
-- `lineage_commit(target, rationale, metric, score, correct)` — Archives Pareto-improving candidates to SQLite and Git.
-- `lineage_best(target)` — Inspects the running Pareto frontier champion.
-- `lineage_history(target, [limit])` — Reads generational lineage history.
-- `profile_benchmark(cmd)` — Runs benchmarks and extracts TFLOPS and timing metrics.
+*Mutate, evaluate, persist, or be discarded. Tracks recursive ancestral depth [D:N] and compounded scale multipliers.*
+- `lineage_commit(target, rationale, metric, score, correct, [extra_metrics])` — Archives Pareto candidates to SQLite and Git, automatically calculating recursive tree depth and compounded scale factors.
+- `lineage_best(target)` — Inspects the running multi-objective Pareto frontier champion.
+- `lineage_history(target, [limit])` — Reads ancestral lineage history.
+- `profile_benchmark(cmd)` — Runs hardware benchmarks and extracts execution metrics.
 
 ```bash
+# Inspect recursive ancestral tree and compounded scale multipliers
 umoja evolve lineage <target>
+
+# Inspect undefeated Pareto optimal champion
 umoja evolve best <target>
+
+# Inspect total committed generations and status
 umoja evolve status <target>
 ```
 
