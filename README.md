@@ -8,7 +8,14 @@
 
 ## What is UMOJA?
 
-**UMOJA** is an unyielding, pure Rust persistent kernel and autonomous evolutionary variation operator. It replaces fragile single-turn LLM generation with guarded mutation, native AST queries, in-memory pre-flight syntax validation, structured test oracles, and an continuous autonomous evolutionary variation & optimization engine.
+**UMOJA** is an unyielding, pure Rust persistent kernel and autonomous evolutionary variation operator. It replaces fragile single-turn LLM generation with guarded mutation, native AST queries, in-memory pre-flight syntax validation, structured test oracles, parallel scientist subagent tournaments, and a continuous autonomous evolutionary variation & optimization engine.
+
+---
+
+## Autonomous Subagent Tournaments (Multi-Agent Variation)
+*Spawn specialized parallel scientist subagents to compete on architectural hypotheses.*
+- **Parallel Ancestry Branching:** Competing subagents (e.g. *John von Neumann, Albert Einstein, James Clerk Maxwell, Ada Lovelace, Alan Turing*) fork from a common Pareto champion parent, implement distinct architectural philosophies (ILP unrolling, spatial L1 cache blocking, continuous field invariants), and physically benchmark on hardware.
+- **Pareto Frontier Settlement:** The kernel evaluates multi-objective metrics ($f(x) = (\text{FPS}, \text{Latency}, \text{Energy})$), automatically purging dominated candidates and committing breakthroughs to SQLite and Git.
 
 ---
 
