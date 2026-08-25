@@ -1,6 +1,6 @@
 ---
 name: umoja
-description: Persistent embedded Rhai kernel, guarded code mutation, AST-grep structural queries, pre-flight syntax validation, automated test oracle, and NVIDIA AVO-style evolutionary search & lineage engine.
+description: Persistent embedded Rhai kernel, guarded code mutation, AST-grep structural queries, pre-flight syntax validation, automated test oracle, and autonomous evolutionary search & lineage engine.
 ---
 
 # UMOJA: Persistent Rhai Kernel & Autonomous Variation Operator
@@ -56,7 +56,7 @@ Stage failing tests first before touching implementation code.
 
 ---
 
-## 4. NVIDIA AVO Evolutionary Optimization & Lineage Engine
+## 4. Autonomous Evolutionary Optimization & Lineage Engine
 
 Autonomous variation operator loop for performance-critical kernels and algorithms.
 

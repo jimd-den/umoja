@@ -8,7 +8,7 @@
 
 ## What is UMOJA?
 
-**UMOJA** is an unyielding, pure Rust persistent kernel and autonomous evolutionary variation operator. It replaces fragile single-turn LLM generation with guarded mutation, native AST queries, in-memory pre-flight syntax validation, structured test oracles, and an NVIDIA AVO-style continuous evolutionary optimization engine.
+**UMOJA** is an unyielding, pure Rust persistent kernel and autonomous evolutionary variation operator. It replaces fragile single-turn LLM generation with guarded mutation, native AST queries, in-memory pre-flight syntax validation, structured test oracles, and an continuous autonomous evolutionary variation & optimization engine.
 
 ---
 
@@ -37,7 +37,7 @@
 - `create_scratch_test(test_name, crates, code)` — Generates standalone integration tests.
 - `run_test_oracle(test_name)` — Parses failure diffs (`left == right`) into structured maps.
 
-### 4. Evolutionary Transcendence (NVIDIA AVO & Lineage Engine)
+### 4. Evolutionary Transcendence (Autonomous Variation & Lineage Engine)
 *Mutate, evaluate, persist, or be discarded.*
 - `lineage_commit(target, rationale, metric, score, correct)` — Archives Pareto-improving candidates to SQLite and Git.
 - `lineage_best(target)` — Inspects the running Pareto frontier champion.

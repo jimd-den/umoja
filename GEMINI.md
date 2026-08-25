@@ -18,7 +18,7 @@ Every file operation goes through `umoja kernel exec`. Never use native
 - Verify red state with `run_test_oracle(test_name)` to extract exact assertion panics (`left == right`) and locations.
 - Make it pass with guarded edits, run `cargo test --workspace`, then `log_action`.
 
-## 4. NVIDIA AVO Evolutionary Optimization & Lineage
+## 4. Autonomous Evolutionary Optimization & Lineage
 - Track candidate progressions via `lineage_history`, `lineage_best`, `lineage_commit`.
 - Benchmark with `profile_benchmark(cmd)`.
 - Inspect CLI state with `umoja evolve lineage/best/status <target>`.
