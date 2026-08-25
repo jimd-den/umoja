@@ -62,8 +62,12 @@ pub struct LineageEntry {
     pub id: String,
     pub target: String,
     pub generation: u64,
+    pub depth: u64,
+    pub scale_multiplier: f64,
     pub commit_hash: Option<String>,
     pub parent_id: Option<String>,
+    #[serde(default)]
+    pub ancestor_ids: Vec<String>,
     pub rationale: String,
     pub scores: ScoreVector,
     pub hardware_profile: Option<HashMap<String, String>>,
@@ -86,13 +90,24 @@ impl LineageEntry {
             id: id.to_string(),
             target: target.to_string(),
             generation,
+            depth: generation,
+            scale_multiplier: 1.0,
             commit_hash: None,
             parent_id,
+            ancestor_ids: Vec::new(),
             rationale: rationale.to_string(),
             scores,
             hardware_profile: None,
             created_at: Utc::now(),
         })
+    }
+
+    /// Recursively computes the evolutionary depth and ancestral chain.
+    pub fn with_ancestry(mut self, depth: u64, ancestors: Vec<String>, scale_factor: f64) -> Self {
+        self.depth = depth;
+        self.ancestor_ids = ancestors;
+        self.scale_multiplier = scale_factor;
+        self
     }
 }
 

@@ -15,7 +15,9 @@ pub fn evolve(app: &App, cmd: &EvolveCommand) -> Result<Output> {
             for e in &entries {
                 let score_str = format!("{}: {:.2}", e.scores.primary_metric_name, e.scores.primary_metric);
                 let commit_str = e.commit_hash.as_deref().unwrap_or("-");
-                lines.push(format!("  Gen {:<3} [{:<7}] -> {:<15} | {}", e.generation, commit_str, score_str, e.rationale));
+                let tree_indent = "  ".repeat(e.depth.saturating_sub(1) as usize);
+                let scale_str = format!("({:.1}x scale)", e.scale_multiplier);
+                lines.push(format!("  {}└─ Gen {:<2} [D:{:<2}] [{:<7}] -> {:<15} {:<12} | {}", tree_indent, e.generation, e.depth, commit_str, score_str, scale_str, e.rationale));
             }
             Ok(Output::new(lines.join("\n"), json_val))
         }

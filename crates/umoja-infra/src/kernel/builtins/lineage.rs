@@ -138,9 +138,18 @@ fn commit_lineage_mutation(
         return Dynamic::from(m);
     };
 
-    let history = store.list(target, 1).unwrap_or_default();
+    let history = store.list(target, 100).unwrap_or_default();
     let gen = history.first().map(|e| e.generation + 1).unwrap_or(1);
     let parent_id = history.first().map(|e| e.id.clone());
+
+    // Recursively collect ancestor lineage path and compute scale multiplier
+    let mut ancestors = Vec::new();
+    for past in &history {
+        ancestors.push(past.id.clone());
+    }
+    let depth = ancestors.len() as u64 + 1;
+    let base_score = history.last().map(|e| e.scores.primary_metric).unwrap_or(score);
+    let scale_factor = if base_score > 0.0 { score / base_score } else { 1.0 };
 
     let mut score_vec = ScoreVector::new(metric_name, score, correct);
     for (k, v) in extra_metrics {
@@ -154,7 +163,7 @@ fn commit_lineage_mutation(
     let now_ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
     let id = format!("lin-{target}-{gen:04}-{now_ts}");
     let mut entry = match LineageEntry::new(&id, target, gen, rationale, score_vec, parent_id) {
-        Ok(e) => e,
+        Ok(e) => e.with_ancestry(depth, ancestors, scale_factor),
         Err(err) => {
             let mut m = Map::new();
             m.insert("ok".into(), Dynamic::from(false));
